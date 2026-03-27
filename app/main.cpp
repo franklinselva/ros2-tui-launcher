@@ -1,0 +1,141 @@
+#include "screens/tui_runner.hpp"
+#include "screens/launch_screen.hpp"
+#include "screens/log_screen.hpp"
+#include "screens/topic_screen.hpp"
+#include "screens/node_screen.hpp"
+
+#include "ros2_tui_launcher/launch_profile.hpp"
+#include "ros2_tui_launcher/process_manager.hpp"
+#include "ros2_tui_launcher/log_aggregator.hpp"
+#include "ros2_tui_launcher/topic_monitor.hpp"
+#include "ros2_tui_launcher/node_inspector.hpp"
+
+#include <rclcpp/rclcpp.hpp>
+#include <spdlog/spdlog.h>
+
+#include <csignal>
+#include <filesystem>
+#include <iostream>
+#include <thread>
+
+namespace {
+std::atomic<bool> g_shutdown{false};
+
+void signalHandler(int) {
+    g_shutdown.store(true);
+}
+}  // namespace
+
+int main(int argc, char* argv[]) {
+    // Parse CLI arguments
+    std::string profile_dir = ".";
+    std::string profile_file;
+
+    for (int i = 1; i < argc; ++i) {
+        std::string arg = argv[i];
+        if ((arg == "--profiles" || arg == "-p") && i + 1 < argc) {
+            profile_dir = argv[++i];
+        } else if ((arg == "--config" || arg == "-c") && i + 1 < argc) {
+            profile_file = argv[++i];
+        } else if (arg == "--help" || arg == "-h") {
+            std::cout << "ros2-tui-launcher - ROS 2 Launch TUI Manager\n\n"
+                      << "Usage:\n"
+                      << "  ros2-tui-launcher [OPTIONS]\n\n"
+                      << "Options:\n"
+                      << "  -p, --profiles <DIR>   Directory containing launch profile YAML files\n"
+                      << "  -c, --config <FILE>    Single profile YAML file to load\n"
+                      << "  -h, --help             Show this help\n\n"
+                      << "Hotkeys:\n"
+                      << "  [L] Launch  [G] Logs  [T] Topics  [N] Nodes  [Q] Quit\n";
+            return 0;
+        }
+    }
+
+    // Initialize ROS 2
+    rclcpp::init(argc, argv);
+    auto node = rclcpp::Node::make_shared("ros2_tui_launcher");
+
+    // Install signal handler
+    std::signal(SIGINT, signalHandler);
+    std::signal(SIGTERM, signalHandler);
+
+    // Load profiles
+    std::vector<rtl::LaunchProfile> profiles;
+    if (!profile_file.empty()) {
+        try {
+            profiles.push_back(rtl::loadProfile(profile_file));
+        } catch (const std::exception& e) {
+            spdlog::error("Failed to load profile '{}': {}", profile_file, e.what());
+            return 1;
+        }
+    } else {
+        profiles = rtl::discoverProfiles(profile_dir);
+    }
+
+    if (profiles.empty()) {
+        spdlog::warn("No profiles found. Use --profiles <dir> or --config <file>.");
+        spdlog::info("Creating empty default profile.");
+        rtl::LaunchProfile empty;
+        empty.name = "Empty";
+        empty.description = "No profile loaded";
+        profiles.push_back(std::move(empty));
+    }
+
+    int active_profile = 0;
+
+    // Create core components
+    rtl::ProcessManager proc_mgr;
+    rtl::LogAggregator log_agg(node);
+    rtl::TopicMonitor topic_mon(node);
+    rtl::NodeInspector node_inspector(node);
+
+    // Wire process output into log aggregator
+    proc_mgr.setLogCallback([&log_agg](const std::string& source, const std::string& line) {
+        log_agg.pushRaw(source, line);
+    });
+
+    // Set watched topics from active profile
+    if (!profiles[active_profile].monitored_topics.empty()) {
+        std::vector<std::pair<std::string, double>> watched;
+        for (const auto& mt : profiles[active_profile].monitored_topics) {
+            watched.emplace_back(mt.topic, mt.expected_hz);
+        }
+        topic_mon.setWatchedTopics(watched);
+    }
+
+    // Start monitors
+    topic_mon.start();
+
+    // Spin rclcpp in a background thread
+    std::thread spin_thread([&node] {
+        rclcpp::spin(node);
+    });
+
+    // Auto-start processes marked with autostart
+    for (const auto& entry : profiles[active_profile].entries) {
+        if (entry.autostart) {
+            proc_mgr.start(entry);
+        }
+    }
+
+    // Build and run TUI
+    rtl::tui::TuiRunner tui("ros2-tui-launcher");
+    tui.addScreen<rtl::tui::LaunchScreen>(&profiles, &active_profile, &proc_mgr);
+    tui.addScreen<rtl::tui::LogScreen>(&log_agg);
+    tui.addScreen<rtl::tui::TopicScreen>(&topic_mon);
+    tui.addScreen<rtl::tui::NodeScreen>(&node_inspector);
+
+    // Run TUI (blocks)
+    tui.run();
+
+    // Cleanup
+    spdlog::info("Shutting down...");
+    topic_mon.stop();
+    proc_mgr.stopAll();
+    rclcpp::shutdown();
+    if (spin_thread.joinable()) {
+        spin_thread.join();
+    }
+
+    return 0;
+}

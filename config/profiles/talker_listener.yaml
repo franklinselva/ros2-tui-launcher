@@ -1,0 +1,22 @@
+# Basic talker/listener demo profile
+name: "Talker & Listener"
+description: "Standard ROS 2 demo_nodes_cpp talker and listener"
+
+launch:
+  - name: "Talker"
+    package: demo_nodes_cpp
+    executable: talker
+    autostart: true
+    restart_policy: on-failure
+
+  - name: "Listener"
+    package: demo_nodes_cpp
+    executable: listener
+    autostart: true
+    restart_policy: on-failure
+
+monitor:
+  topics:
+    - name: /chatter
+      expected_hz: 1.0
+  hz_rate: 1.0

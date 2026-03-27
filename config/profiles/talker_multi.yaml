@@ -1,0 +1,30 @@
+# Multi-talker stress test profile
+name: "Multi Talker"
+description: "Multiple talkers publishing to /chatter with one listener"
+
+launch:
+  - name: "Talker 1"
+    package: demo_nodes_cpp
+    executable: talker
+    autostart: true
+    env:
+      ROS_DOMAIN_ID: "0"
+    restart_policy: always
+
+  - name: "Talker 2 (py)"
+    package: demo_nodes_py
+    executable: talker
+    autostart: true
+    restart_policy: always
+
+  - name: "Listener"
+    package: demo_nodes_cpp
+    executable: listener
+    autostart: true
+    restart_policy: on-failure
+
+monitor:
+  topics:
+    - name: /chatter
+      expected_hz: 2.0
+  hz_rate: 0.5

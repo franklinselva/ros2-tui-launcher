@@ -1,0 +1,24 @@
+# Turtlesim demo profile
+name: "Turtlesim"
+description: "Turtlesim node with keyboard teleop"
+
+launch:
+  - name: "Turtlesim"
+    package: turtlesim
+    executable: turtlesim_node
+    autostart: true
+    restart_policy: on-failure
+
+  # Note: teleop_turtle_key requires terminal input,
+  # so autostart is off — start manually if needed
+  - name: "Teleop (keyboard)"
+    package: turtlesim
+    executable: turtle_teleop_key
+    autostart: false
+
+monitor:
+  topics:
+    - name: /turtle1/cmd_vel
+      expected_hz: 0.0
+    - name: /turtle1/pose
+      expected_hz: 60.0

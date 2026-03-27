@@ -1,0 +1,21 @@
+# Lifecycle node demo profile
+name: "Lifecycle Talker"
+description: "Lifecycle-managed talker with standard listener"
+
+launch:
+  - name: "Lifecycle Talker"
+    package: lifecycle
+    executable: lifecycle_talker
+    autostart: true
+    restart_policy: on-failure
+
+  - name: "Lifecycle Listener"
+    package: lifecycle
+    executable: lifecycle_listener
+    autostart: true
+    restart_policy: on-failure
+
+monitor:
+  topics:
+    - name: /lifecycle_chatter
+      expected_hz: 1.0

@@ -1,0 +1,21 @@
+# Python variant of talker/listener
+name: "Talker & Listener (Python)"
+description: "ROS 2 demo_nodes_py talker and listener"
+
+launch:
+  - name: "Talker (py)"
+    package: demo_nodes_py
+    executable: talker
+    autostart: true
+    restart_policy: on-failure
+
+  - name: "Listener (py)"
+    package: demo_nodes_py
+    executable: listener
+    autostart: true
+    restart_policy: on-failure
+
+monitor:
+  topics:
+    - name: /chatter
+      expected_hz: 1.0
