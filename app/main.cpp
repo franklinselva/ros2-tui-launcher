@@ -12,6 +12,7 @@
 #include "ros2_tui_launcher/node_inspector.hpp"
 #include "ros2_tui_launcher/parameter_manager.hpp"
 #include "ros2_tui_launcher/system_monitor.hpp"
+#include "ros2_tui_launcher/log_writer.hpp"
 
 #include <rclcpp/rclcpp.hpp>
 #include <spdlog/spdlog.h>
@@ -19,6 +20,7 @@
 #include <csignal>
 #include <filesystem>
 #include <iostream>
+#include <memory>
 #include <thread>
 
 namespace {
@@ -106,6 +108,14 @@ int main(int argc, char* argv[]) {
     rtl::ParameterManager param_mgr(node);
     rtl::SystemMonitor sys_mon;
 
+    // Create log writer for file persistence
+    auto session_ts = rtl::LogWriter::sessionTimestamp();
+    auto log_writer = std::make_shared<rtl::LogWriter>(
+        profiles[active_profile].log_config,
+        profiles[active_profile].name,
+        session_ts);
+    log_agg.setLogWriter(log_writer);
+
     // Wire process output into log aggregator
     proc_mgr.setLogCallback([&log_agg](const std::string& source, const std::string& line) {
         log_agg.pushRaw(source, line);
@@ -148,7 +158,18 @@ int main(int argc, char* argv[]) {
     sigaction(SIGINT, &sa, nullptr);
     sigaction(SIGTERM, &sa, nullptr);
 
-    tui.addScreen<rtl::tui::LaunchScreen>(&profiles, &active_profile, &proc_mgr, &sys_mon);
+    auto launch_screen = std::make_shared<rtl::tui::LaunchScreen>(
+        &profiles, &active_profile, &proc_mgr, &sys_mon);
+    launch_screen->setProfileChangeCallback(
+        [&profiles, &log_agg, &log_writer, &session_ts](int new_idx) {
+            // Swap log writer for the new profile (same session timestamp)
+            log_writer = std::make_shared<rtl::LogWriter>(
+                profiles[new_idx].log_config,
+                profiles[new_idx].name,
+                session_ts);
+            log_agg.setLogWriter(log_writer);
+        });
+    tui.addScreen(launch_screen);
     tui.addScreen<rtl::tui::LogScreen>(&log_agg, &node_inspector);
     tui.addScreen<rtl::tui::TopicScreen>(&topic_mon, &node_inspector);
     tui.addScreen<rtl::tui::NodeScreen>(&node_inspector);

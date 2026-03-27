@@ -2,6 +2,10 @@
 name: "Turtlesim"
 description: "Turtlesim node with keyboard teleop"
 
+logging:
+  max_file_size_mb: 10
+  max_rotated_files: 5
+
 launch:
   - name: "Turtlesim"
     package: turtlesim

@@ -2,6 +2,10 @@
 name: "Multi Talker"
 description: "Multiple talkers publishing to /chatter with one listener"
 
+logging:
+  max_file_size_mb: 10
+  max_rotated_files: 5
+
 launch:
   - name: "Talker 1"
     package: demo_nodes_cpp

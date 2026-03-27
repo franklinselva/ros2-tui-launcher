@@ -6,12 +6,16 @@
 #include <chrono>
 #include <deque>
 #include <functional>
+#include <memory>
 #include <mutex>
 #include <set>
 #include <string>
 #include <vector>
 
 namespace rtl {
+
+// Forward declaration
+class LogWriter;
 
 /// Severity level (mirrors rcl_interfaces::msg::Log levels).
 enum class LogLevel {
@@ -74,6 +78,10 @@ public:
     /// Clear all entries.
     void clear();
 
+    /// Set the log writer for file persistence.
+    /// Thread-safe. Pass nullptr to disable persistence.
+    void setLogWriter(std::shared_ptr<LogWriter> writer);
+
 private:
     void rosoutCallback(const rcl_interfaces::msg::Log::SharedPtr msg);
 
@@ -84,6 +92,9 @@ private:
     std::set<std::string> known_sources_;
     size_t max_lines_;
     uint64_t generation_ = 0;
+
+    std::shared_ptr<LogWriter> log_writer_;
+    std::mutex writer_mutex_;  ///< Separate mutex for log writer access
 };
 
 }  // namespace rtl

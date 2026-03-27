@@ -1,4 +1,5 @@
 #include "ros2_tui_launcher/launch_profile.hpp"
+#include "ros2_tui_launcher/config_validator.hpp"
 
 #include <yaml-cpp/yaml.h>
 #include <spdlog/spdlog.h>
@@ -85,6 +86,34 @@ LaunchProfile loadProfile(const std::filesystem::path& path) {
         if (auto rate = monitor_node["hz_rate"]) {
             profile.topic_hz_rate = rate.as<double>(1.0);
         }
+    }
+
+    // Parse logging configuration
+    if (auto log_node = root["logging"]) {
+        profile.log_config.log_dir = log_node["log_dir"].as<std::string>("");
+        auto max_mb = log_node["max_file_size_mb"].as<size_t>(10);
+        profile.log_config.max_file_size_bytes = max_mb * 1024 * 1024;
+        profile.log_config.max_rotated_files = log_node["max_rotated_files"].as<size_t>(5);
+        auto flush_ms = log_node["flush_interval_ms"].as<int>(1000);
+        profile.log_config.flush_interval = std::chrono::milliseconds(flush_ms);
+    }
+
+    // Validate the parsed profile
+    ConfigValidator validator;
+    auto vresult = validator.validate(profile, path);
+
+    // Remove invalid entries in reverse order to preserve indices
+    for (auto it = vresult.invalid_entry_indices.rbegin();
+         it != vresult.invalid_entry_indices.rend(); ++it) {
+        if (*it < profile.entries.size()) {
+            profile.entries.erase(profile.entries.begin() +
+                                  static_cast<std::ptrdiff_t>(*it));
+        }
+    }
+
+    if (!vresult.valid) {
+        throw std::runtime_error(
+            "Profile '" + profile.name + "' has critical validation errors");
     }
 
     spdlog::info("Loaded profile '{}' with {} entries, {} monitored topics",

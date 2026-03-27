@@ -94,6 +94,9 @@ void LaunchScreen::stopAll() {
 void LaunchScreen::nextProfile() {
     if (profiles_->size() <= 1) return;
     *active_profile_idx_ = (*active_profile_idx_ + 1) % (int)profiles_->size();
+    if (on_profile_change_) {
+        on_profile_change_(*active_profile_idx_);
+    }
 }
 
 std::string LaunchScreen::formatMemKb(unsigned long kb) {

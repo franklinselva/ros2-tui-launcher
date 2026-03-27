@@ -2,6 +2,12 @@
 name: "Talker & Listener"
 description: "Standard ROS 2 demo_nodes_cpp talker and listener"
 
+logging:
+  # log_dir: "/tmp/ros2-tui-logs"  # default: <cwd>/log/
+  max_file_size_mb: 10
+  max_rotated_files: 5
+  flush_interval_ms: 1000
+
 launch:
   - name: "Talker"
     package: demo_nodes_cpp

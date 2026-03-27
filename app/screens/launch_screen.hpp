@@ -6,6 +6,7 @@
 #include "ros2_tui_launcher/process_manager.hpp"
 #include "ros2_tui_launcher/system_monitor.hpp"
 
+#include <functional>
 #include <future>
 #include <mutex>
 #include <string>
@@ -29,6 +30,12 @@ public:
     std::string hotkey() const override { return "L"; }
     ftxui::Component component() override;
     void tick() override;
+
+    /// Set callback invoked when the active profile changes.
+    /// @param cb  Called with the new profile index.
+    void setProfileChangeCallback(std::function<void(int)> cb) {
+        on_profile_change_ = std::move(cb);
+    }
 
 private:
     void startSelected();
@@ -66,6 +73,8 @@ private:
     std::vector<std::future<void>> bg_futures_;
     void launchAsync(std::function<void()> fn);
     void cleanupFinishedFutures();
+
+    std::function<void(int)> on_profile_change_;
 };
 
 }  // namespace rtl::tui

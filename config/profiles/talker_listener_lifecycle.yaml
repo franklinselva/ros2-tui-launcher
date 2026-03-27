@@ -2,6 +2,10 @@
 name: "Lifecycle Talker"
 description: "Lifecycle-managed talker with standard listener"
 
+logging:
+  max_file_size_mb: 10
+  max_rotated_files: 5
+
 launch:
   - name: "Lifecycle Talker"
     package: lifecycle

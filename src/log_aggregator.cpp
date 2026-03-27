@@ -1,4 +1,5 @@
 #include "ros2_tui_launcher/log_aggregator.hpp"
+#include "ros2_tui_launcher/log_writer.hpp"
 
 #include <algorithm>
 #include <cstdio>
@@ -53,6 +54,11 @@ LogAggregator::LogAggregator(rclcpp::Node::SharedPtr node, size_t max_lines)
         });
 }
 
+void LogAggregator::setLogWriter(std::shared_ptr<LogWriter> writer) {
+    std::lock_guard lock(writer_mutex_);
+    log_writer_ = std::move(writer);
+}
+
 void LogAggregator::rosoutCallback(const rcl_interfaces::msg::Log::SharedPtr msg) {
     LogEntry entry;
     entry.source = msg->name;
@@ -64,6 +70,14 @@ void LogAggregator::rosoutCallback(const rcl_interfaces::msg::Log::SharedPtr msg
     auto nsec = std::chrono::nanoseconds(msg->stamp.nanosec);
     entry.wall_time = std::chrono::system_clock::time_point(
         std::chrono::duration_cast<std::chrono::system_clock::duration>(sec + nsec));
+
+    // Persist to file BEFORE taking deque mutex (LogWriter has its own mutex)
+    {
+        std::lock_guard wlock(writer_mutex_);
+        if (log_writer_) {
+            log_writer_->writeRosout(entry);
+        }
+    }
 
     std::lock_guard lock(mutex_);
     known_sources_.insert(entry.source);
@@ -145,6 +159,15 @@ void LogAggregator::pushRaw(const std::string& source, const std::string& messag
     }
 
     entry.message = std::string(line);
+
+    // Persist to file using original process name as file key
+    // (entry.source may have been overwritten by parsed node name)
+    {
+        std::lock_guard wlock(writer_mutex_);
+        if (log_writer_) {
+            log_writer_->write(source, entry);
+        }
+    }
 
     std::lock_guard lock(mutex_);
     known_sources_.insert(entry.source);

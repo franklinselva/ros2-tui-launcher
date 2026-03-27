@@ -67,8 +67,18 @@ find_package(PkgConfig REQUIRED)
 pkg_check_modules(LIBPROC2 REQUIRED libproc2)
 
 # NVML (NVIDIA Management Library) — optional, for GPU monitoring without popen
-find_library(NVML_LIBRARY nvidia-ml PATHS /usr/lib/x86_64-linux-gnu /usr/lib64)
-find_path(NVML_INCLUDE_DIR nvml.h PATHS /usr/include /usr/local/cuda/include)
+find_library(NVML_LIBRARY nvidia-ml PATHS
+  /usr/lib/x86_64-linux-gnu
+  /usr/lib/aarch64-linux-gnu
+  /usr/lib64
+  /usr/local/cuda/lib64
+  /usr/local/cuda/targets/aarch64-linux/lib
+)
+find_path(NVML_INCLUDE_DIR nvml.h PATHS
+  /usr/include
+  /usr/local/cuda/include
+  /usr/local/cuda/targets/aarch64-linux/include
+)
 if(NVML_LIBRARY AND NVML_INCLUDE_DIR)
   message(STATUS "Found NVML: ${NVML_LIBRARY}")
   set(HAVE_NVML TRUE)
@@ -86,6 +96,8 @@ add_library(ros2_tui_launcher_core STATIC
   src/node_inspector.cpp
   src/parameter_manager.cpp
   src/system_monitor.cpp
+  src/config_validator.cpp
+  src/log_writer.cpp
 )
 target_include_directories(ros2_tui_launcher_core PUBLIC
   $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>

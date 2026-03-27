@@ -1,11 +1,20 @@
 #pragma once
 
+#include <chrono>
 #include <filesystem>
 #include <string>
 #include <unordered_map>
 #include <vector>
 
 namespace rtl {
+
+/// Configuration for log file persistence.
+struct LogConfig {
+    std::string log_dir;                               ///< Empty = "<cwd>/log/"
+    size_t max_file_size_bytes = 10 * 1024 * 1024;     ///< 10 MB default
+    size_t max_rotated_files = 5;                      ///< Keep 5 rotated files
+    std::chrono::milliseconds flush_interval{1000};    ///< 1 second flush
+};
 
 /// A single launch entry within a profile.
 struct LaunchEntry {
@@ -49,6 +58,7 @@ struct LaunchProfile {
     std::vector<LaunchEntry> entries;
     std::vector<MonitoredTopic> monitored_topics;
     double topic_hz_rate = 1.0;  ///< How often to poll topic frequencies
+    LogConfig log_config;        ///< Log persistence configuration
 };
 
 /// Load a single profile from a YAML file.
