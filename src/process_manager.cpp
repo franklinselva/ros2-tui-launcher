@@ -32,6 +32,7 @@ struct ProcessManager::ManagedProcess {
     std::thread reader_thread;
     std::thread wait_thread;
     std::atomic<bool> active{false};
+    std::atomic<bool> shutting_down{false};  // suppress restarts during shutdown
 };
 
 ProcessManager::ProcessManager() = default;
@@ -145,6 +146,11 @@ bool ProcessManager::start(const LaunchEntry& entry) {
     close(stdout_pipe[1]);
     close(stderr_pipe[1]);
 
+    // Also set the child's process group from the parent side to avoid
+    // a race where stop() sends kill(-pid) before the child calls setpgid.
+    // Harmless EACCES if the child already exec'd.
+    setpgid(pid, pid);
+
     auto proc = std::make_shared<ManagedProcess>();
     proc->entry = entry;
     proc->info.name = name;
@@ -182,6 +188,7 @@ void ProcessManager::stop(const std::string& name, std::chrono::milliseconds tim
 
     if (!proc->active.load()) return;
 
+    proc->shutting_down.store(true);
     proc->info.state.store(ProcessState::Stopping);
 
     // Send SIGINT to the process group
@@ -207,15 +214,42 @@ void ProcessManager::stop(const std::string& name, std::chrono::milliseconds tim
 }
 
 void ProcessManager::stopAll() {
-    std::vector<std::string> names;
+    // Mark all processes as shutting down and send SIGINT in parallel
+    std::vector<std::pair<std::string, std::shared_ptr<ManagedProcess>>> to_stop;
     {
         std::lock_guard lock(mutex_);
-        for (const auto& [name, _] : procs_) {
-            names.push_back(name);
+        for (auto& [name, proc] : procs_) {
+            if (proc->active.load()) {
+                proc->shutting_down.store(true);
+                proc->info.state.store(ProcessState::Stopping);
+                if (proc->info.pid > 0) {
+                    kill(-proc->info.pid, SIGINT);
+                }
+                to_stop.emplace_back(name, proc);
+            }
         }
     }
-    for (const auto& name : names) {
-        stop(name);
+
+    // Wait for all to exit gracefully (shared deadline)
+    auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(5000);
+    for (auto& [name, proc] : to_stop) {
+        while (proc->active.load() && std::chrono::steady_clock::now() < deadline) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(50));
+        }
+    }
+
+    // Force kill any stragglers
+    for (auto& [name, proc] : to_stop) {
+        if (proc->active.load() && proc->info.pid > 0) {
+            spdlog::warn("Force killing '{}'", name);
+            kill(-proc->info.pid, SIGKILL);
+        }
+    }
+
+    // Join all threads
+    for (auto& [name, proc] : to_stop) {
+        if (proc->wait_thread.joinable()) proc->wait_thread.join();
+        if (proc->reader_thread.joinable()) proc->reader_thread.join();
     }
 }
 
@@ -318,23 +352,24 @@ void ProcessManager::waitThread(std::shared_ptr<ManagedProcess> proc) {
 
     spdlog::info("Process '{}' exited (code={})", proc->info.name, proc->info.exit_code.load());
 
-    // Handle restart policy — actually perform the restart
-    if (proc->info.state.load() == ProcessState::Crashed) {
-        if (proc->entry.restart_policy == "always" ||
-            proc->entry.restart_policy == "on-failure") {
-            spdlog::info("Restarting '{}' per restart_policy='{}'",
-                         proc->info.name, proc->entry.restart_policy);
-            // Detach a thread to avoid blocking waitThread while restart runs stop+start
+    // Handle restart policy — but NOT if we're being explicitly stopped/shut down
+    if (!proc->shutting_down.load()) {
+        if (proc->info.state.load() == ProcessState::Crashed) {
+            if (proc->entry.restart_policy == "always" ||
+                proc->entry.restart_policy == "on-failure") {
+                spdlog::info("Restarting '{}' per restart_policy='{}'",
+                             proc->info.name, proc->entry.restart_policy);
+                std::thread([this, entry = proc->entry]() {
+                    start(entry);
+                }).detach();
+            }
+        } else if (proc->entry.restart_policy == "always") {
+            spdlog::info("Restarting '{}' per restart_policy='always'",
+                         proc->info.name);
             std::thread([this, entry = proc->entry]() {
                 start(entry);
             }).detach();
         }
-    } else if (proc->entry.restart_policy == "always") {
-        spdlog::info("Restarting '{}' per restart_policy='always'",
-                     proc->info.name);
-        std::thread([this, entry = proc->entry]() {
-            start(entry);
-        }).detach();
     }
 }
 

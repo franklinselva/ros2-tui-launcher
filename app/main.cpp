@@ -11,6 +11,7 @@
 #include "ros2_tui_launcher/topic_monitor.hpp"
 #include "ros2_tui_launcher/node_inspector.hpp"
 #include "ros2_tui_launcher/parameter_manager.hpp"
+#include "ros2_tui_launcher/system_monitor.hpp"
 
 #include <rclcpp/rclcpp.hpp>
 #include <spdlog/spdlog.h>
@@ -102,6 +103,7 @@ int main(int argc, char* argv[]) {
     rtl::TopicMonitor topic_mon(node);
     rtl::NodeInspector node_inspector(node);
     rtl::ParameterManager param_mgr(node);
+    rtl::SystemMonitor sys_mon;
 
     // Wire process output into log aggregator
     proc_mgr.setLogCallback([&log_agg](const std::string& source, const std::string& line) {
@@ -140,7 +142,7 @@ int main(int argc, char* argv[]) {
     std::signal(SIGINT, signalHandler);
     std::signal(SIGTERM, signalHandler);
 
-    tui.addScreen<rtl::tui::LaunchScreen>(&profiles, &active_profile, &proc_mgr);
+    tui.addScreen<rtl::tui::LaunchScreen>(&profiles, &active_profile, &proc_mgr, &sys_mon);
     tui.addScreen<rtl::tui::LogScreen>(&log_agg, &node_inspector);
     tui.addScreen<rtl::tui::TopicScreen>(&topic_mon, &node_inspector);
     tui.addScreen<rtl::tui::NodeScreen>(&node_inspector);

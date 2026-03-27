@@ -16,6 +16,8 @@
 
   <depend>yaml-cpp</depend>
   <depend>spdlog</depend>
+  <build_depend>libproc2-dev</build_depend>
+  <exec_depend>libproc2-0</exec_depend>
 
   <export>
     <build_type>ament_cmake</build_type>

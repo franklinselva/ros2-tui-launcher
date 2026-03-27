@@ -62,6 +62,10 @@ if(NOT spdlog_FOUND)
   FetchContent_MakeAvailable(spdlog)
 endif()
 
+# libproc2 (procps-ng) for system/process monitoring
+find_package(PkgConfig REQUIRED)
+pkg_check_modules(LIBPROC2 REQUIRED libproc2)
+
 # ── Core library (rclcpp-based) ─────────────────────────────────────────────
 add_library(ros2_tui_launcher_core STATIC
   src/launch_profile.cpp
@@ -70,15 +74,20 @@ add_library(ros2_tui_launcher_core STATIC
   src/topic_monitor.cpp
   src/node_inspector.cpp
   src/parameter_manager.cpp
+  src/system_monitor.cpp
 )
 target_include_directories(ros2_tui_launcher_core PUBLIC
   $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
   $<INSTALL_INTERFACE:include>
 )
+target_include_directories(ros2_tui_launcher_core PUBLIC
+  ${LIBPROC2_INCLUDE_DIRS}
+)
 target_link_libraries(ros2_tui_launcher_core PUBLIC
   yaml-cpp::yaml-cpp
   spdlog::spdlog
   SPSCQueue
+  ${LIBPROC2_LIBRARIES}
 )
 target_compile_options(ros2_tui_launcher_core PRIVATE -Wall -Wextra -Wpedantic)
 ament_target_dependencies(ros2_tui_launcher_core PUBLIC
