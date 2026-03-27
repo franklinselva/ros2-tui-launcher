@@ -19,17 +19,24 @@
 #include <thread>
 
 namespace {
-std::atomic<bool> g_shutdown{false};
+// Forward-declared so the signal handler can request TUI exit
+rtl::tui::TuiRunner* g_tui = nullptr;
 
 void signalHandler(int) {
-    g_shutdown.store(true);
+    if (g_tui) {
+        g_tui->requestStop();
+    }
 }
 }  // namespace
 
 int main(int argc, char* argv[]) {
-    // Parse CLI arguments
+    // Parse CLI arguments — separate our flags from ROS args
     std::string profile_dir = ".";
     std::string profile_file;
+
+    // Collect args that are NOT ours, to pass to rclcpp
+    std::vector<const char*> ros_argv;
+    ros_argv.push_back(argv[0]);
 
     for (int i = 1; i < argc; ++i) {
         std::string arg = argv[i];
@@ -48,16 +55,16 @@ int main(int argc, char* argv[]) {
                       << "Hotkeys:\n"
                       << "  [L] Launch  [G] Logs  [T] Topics  [N] Nodes  [Q] Quit\n";
             return 0;
+        } else {
+            // Pass unrecognized args (including --ros-args) to rclcpp
+            ros_argv.push_back(argv[i]);
         }
     }
 
-    // Initialize ROS 2
-    rclcpp::init(argc, argv);
+    // Initialize ROS 2 with only ROS-relevant args
+    int ros_argc = static_cast<int>(ros_argv.size());
+    rclcpp::init(ros_argc, const_cast<char**>(ros_argv.data()));
     auto node = rclcpp::Node::make_shared("ros2_tui_launcher");
-
-    // Install signal handler
-    std::signal(SIGINT, signalHandler);
-    std::signal(SIGTERM, signalHandler);
 
     // Load profiles
     std::vector<rtl::LaunchProfile> profiles;
@@ -120,13 +127,25 @@ int main(int argc, char* argv[]) {
 
     // Build and run TUI
     rtl::tui::TuiRunner tui("ros2-tui-launcher");
+    g_tui = &tui;
+
+    // Install signal handlers AFTER creating TUI so they can call requestStop()
+    std::signal(SIGINT, signalHandler);
+    std::signal(SIGTERM, signalHandler);
+
     tui.addScreen<rtl::tui::LaunchScreen>(&profiles, &active_profile, &proc_mgr);
     tui.addScreen<rtl::tui::LogScreen>(&log_agg);
     tui.addScreen<rtl::tui::TopicScreen>(&topic_mon);
     tui.addScreen<rtl::tui::NodeScreen>(&node_inspector);
 
-    // Run TUI (blocks)
-    tui.run();
+    // Run TUI (blocks) — wrapped in try/catch for clean shutdown on exceptions
+    try {
+        tui.run();
+    } catch (const std::exception& e) {
+        spdlog::error("TUI error: {}", e.what());
+    }
+
+    g_tui = nullptr;
 
     // Cleanup
     spdlog::info("Shutting down...");

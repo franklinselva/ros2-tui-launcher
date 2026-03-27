@@ -18,6 +18,14 @@ find_package(rosgraph_msgs REQUIRED)
 # ── Third-party Dependencies ────────────────────────────────────────────────
 include(FetchContent)
 
+# SPSCQueue (header-only lock-free single-producer single-consumer queue)
+FetchContent_Declare(SPSCQueue
+  GIT_REPOSITORY https://github.com/rigtorp/SPSCQueue.git
+  GIT_TAG        v1.1
+  GIT_SHALLOW    TRUE
+)
+FetchContent_MakeAvailable(SPSCQueue)
+
 # FTXUI v5.0.0
 FetchContent_Declare(ftxui
   GIT_REPOSITORY https://github.com/ArthurSonzogni/FTXUI.git
@@ -27,6 +35,7 @@ FetchContent_Declare(ftxui
 set(FTXUI_BUILD_DOCS OFF CACHE BOOL "" FORCE)
 set(FTXUI_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
 set(FTXUI_BUILD_TESTS OFF CACHE BOOL "" FORCE)
+set(FTXUI_ENABLE_INSTALL OFF CACHE BOOL "" FORCE)
 FetchContent_MakeAvailable(ftxui)
 
 # yaml-cpp
@@ -68,7 +77,9 @@ target_include_directories(ros2_tui_launcher_core PUBLIC
 target_link_libraries(ros2_tui_launcher_core PUBLIC
   yaml-cpp::yaml-cpp
   spdlog::spdlog
+  SPSCQueue
 )
+target_compile_options(ros2_tui_launcher_core PRIVATE -Wall -Wextra -Wpedantic)
 ament_target_dependencies(ros2_tui_launcher_core PUBLIC
   rclcpp
   rcl_interfaces
@@ -87,6 +98,7 @@ add_library(ros2_tui_launcher_tui STATIC
 target_include_directories(ros2_tui_launcher_tui PUBLIC
   $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/app>
 )
+target_compile_options(ros2_tui_launcher_tui PRIVATE -Wall -Wextra -Wpedantic)
 target_link_libraries(ros2_tui_launcher_tui PUBLIC
   ros2_tui_launcher_core
   ftxui::screen

@@ -7,6 +7,7 @@
 #include <deque>
 #include <functional>
 #include <mutex>
+#include <set>
 #include <string>
 #include <vector>
 
@@ -76,6 +77,7 @@ private:
     rclcpp::Subscription<rcl_interfaces::msg::Log>::SharedPtr rosout_sub_;
     mutable std::mutex mutex_;
     std::deque<LogEntry> entries_;
+    std::set<std::string> known_sources_;
     size_t max_lines_;
 };
 

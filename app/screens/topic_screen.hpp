@@ -24,6 +24,8 @@ private:
     std::mutex mutex_;
     std::vector<TopicInfo> cached_topics_;
     bool show_all_ = false;  // false = only watched topics, true = all
+    int selected_ = 0;
+    int scroll_offset_ = 0;
 };
 
 }  // namespace rtl::tui

@@ -3,6 +3,7 @@
 #include <ftxui/dom/elements.hpp>
 #include <ftxui/component/component.hpp>
 #include <ftxui/component/event.hpp>
+#include <ftxui/screen/terminal.hpp>
 
 #include <algorithm>
 
@@ -34,6 +35,10 @@ ftxui::Component LogScreen::component() {
     auto renderer = Renderer([this] {
         std::lock_guard lock(mutex_);
 
+        // Adapt viewport to terminal height (subtract chrome: header, filter bar, separators, hotkey bar, border)
+        auto term_size = Terminal::Size();
+        viewport_height_ = std::max(5, term_size.dimy - 10);
+
         // Filter bar
         std::string source_label = (selected_source_ == 0)
             ? "All"
@@ -50,6 +55,7 @@ ftxui::Component LogScreen::component() {
             text("  Search: ") | bold,
             text(search_mode_ ? search_text_ + "_" : (search_text_.empty() ? "(none)" : search_text_))
                 | (search_mode_ ? color(Color::White) : dim),
+            search_mode_ ? (text(" [ESC] cancel ") | color(Color::Yellow)) : text(""),
             filler(),
             text(" " + std::to_string(cached_entries_.size()) + " lines ") | dim,
             text(auto_scroll_ ? " AUTO " : " MANUAL ") | (auto_scroll_ ? color(Color::Green) : color(Color::Yellow)),
@@ -57,7 +63,7 @@ ftxui::Component LogScreen::component() {
 
         // Log entries
         Elements log_lines;
-        int max_visible = 40;
+        int max_visible = viewport_height_;
         int total = (int)cached_entries_.size();
         int start = auto_scroll_
             ? std::max(0, total - max_visible)
@@ -163,19 +169,21 @@ ftxui::Component LogScreen::component() {
         if (event == Event::ArrowDown || event == Event::Character("j")) {
             std::lock_guard lock(mutex_);
             auto_scroll_ = false;
-            scroll_offset_++;
+            int max_offset = std::max(0, (int)cached_entries_.size() - viewport_height_);
+            if (scroll_offset_ < max_offset) scroll_offset_++;
             return true;
         }
         if (event == Event::PageUp) {
             std::lock_guard lock(mutex_);
             auto_scroll_ = false;
-            scroll_offset_ = std::max(0, scroll_offset_ - 40);
+            scroll_offset_ = std::max(0, scroll_offset_ - viewport_height_);
             return true;
         }
         if (event == Event::PageDown) {
             std::lock_guard lock(mutex_);
             auto_scroll_ = false;
-            scroll_offset_ += 40;
+            int max_offset = std::max(0, (int)cached_entries_.size() - viewport_height_);
+            scroll_offset_ = std::min(scroll_offset_ + viewport_height_, max_offset);
             return true;
         }
         if (event == Event::Home) {
@@ -196,6 +204,7 @@ ftxui::Component LogScreen::component() {
 void LogScreen::tick() {
     std::string source_filter;
     LogLevel min_level = LogLevel::Debug;
+    std::string search;
 
     {
         std::lock_guard lock(mutex_);
@@ -205,9 +214,10 @@ void LogScreen::tick() {
         if (selected_level_ < (int)kLevels.size()) {
             min_level = kLevels[selected_level_];
         }
+        search = search_text_;  // copy under lock to fix data race
     }
 
-    auto entries = log_agg_->filtered(source_filter, min_level, search_text_);
+    auto entries = log_agg_->filtered(source_filter, min_level, search);
     auto sources = log_agg_->sources();
 
     std::lock_guard lock(mutex_);

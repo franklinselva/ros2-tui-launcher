@@ -2,6 +2,11 @@
 
 #include <rclcpp/rclcpp.hpp>
 
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Winterference-size"
+#include <rigtorp/SPSCQueue.h>
+#pragma GCC diagnostic pop
+
 #include <atomic>
 #include <chrono>
 #include <deque>
@@ -57,15 +62,20 @@ public:
 
 private:
     struct HzTracker {
+        /// Lock-free queue: subscription callback (producer) → poll thread (consumer)
+        std::unique_ptr<rigtorp::SPSCQueue<std::chrono::steady_clock::time_point>> incoming;
+        /// Drained timestamps owned by poll thread only — no lock needed
         std::deque<std::chrono::steady_clock::time_point> timestamps;
         rclcpp::GenericSubscription::SharedPtr subscription;
         double expected_hz = 0.0;
         static constexpr size_t kMaxSamples = 100;
+        static constexpr size_t kQueueCapacity = 256;
     };
 
     void pollLoop();
     void refreshTopicList();
     double computeHz(const HzTracker& tracker) const;
+    void tryCreateSubscription(const std::string& name, HzTracker& tracker);
 
     rclcpp::Node::SharedPtr node_;
     std::chrono::milliseconds poll_interval_;

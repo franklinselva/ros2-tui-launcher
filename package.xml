@@ -14,8 +14,8 @@
   <depend>lifecycle_msgs</depend>
   <depend>rosgraph_msgs</depend>
 
-  <build_depend>yaml-cpp</build_depend>
-  <build_depend>spdlog</build_depend>
+  <depend>yaml-cpp</depend>
+  <depend>spdlog</depend>
 
   <export>
     <build_type>ament_cmake</build_type>

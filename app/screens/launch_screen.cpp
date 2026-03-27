@@ -5,6 +5,7 @@
 #include <ftxui/component/event.hpp>
 
 #include <algorithm>
+#include <thread>
 
 using namespace ftxui;
 
@@ -22,33 +23,45 @@ void LaunchScreen::startSelected() {
     if (profiles_->empty()) return;
     const auto& profile = (*profiles_)[*active_profile_idx_];
     if (selected_entry_ < 0 || selected_entry_ >= (int)profile.entries.size()) return;
-    proc_mgr_->start(profile.entries[selected_entry_]);
+    // Run in background thread to avoid blocking UI
+    std::thread([this, entry = profile.entries[selected_entry_]]() {
+        proc_mgr_->start(entry);
+    }).detach();
 }
 
 void LaunchScreen::stopSelected() {
     if (profiles_->empty()) return;
     const auto& profile = (*profiles_)[*active_profile_idx_];
     if (selected_entry_ < 0 || selected_entry_ >= (int)profile.entries.size()) return;
-    proc_mgr_->stop(profile.entries[selected_entry_].displayName());
+    // Run in background thread — stop() can block up to 5s
+    std::thread([this, name = profile.entries[selected_entry_].displayName()]() {
+        proc_mgr_->stop(name);
+    }).detach();
 }
 
 void LaunchScreen::restartSelected() {
     if (profiles_->empty()) return;
     const auto& profile = (*profiles_)[*active_profile_idx_];
     if (selected_entry_ < 0 || selected_entry_ >= (int)profile.entries.size()) return;
-    proc_mgr_->restart(profile.entries[selected_entry_].displayName());
+    std::thread([this, name = profile.entries[selected_entry_].displayName()]() {
+        proc_mgr_->restart(name);
+    }).detach();
 }
 
 void LaunchScreen::startAll() {
     if (profiles_->empty()) return;
     const auto& profile = (*profiles_)[*active_profile_idx_];
-    for (const auto& entry : profile.entries) {
-        proc_mgr_->start(entry);
-    }
+    std::thread([this, entries = profile.entries]() {
+        for (const auto& entry : entries) {
+            proc_mgr_->start(entry);
+        }
+    }).detach();
 }
 
 void LaunchScreen::stopAll() {
-    proc_mgr_->stopAll();
+    std::thread([this]() {
+        proc_mgr_->stopAll();
+    }).detach();
 }
 
 void LaunchScreen::nextProfile() {
@@ -125,8 +138,9 @@ ftxui::Component LaunchScreen::component() {
             }
 
             // State color
+            auto state = pinfo.state.load();
             Color state_color = Color::White;
-            switch (pinfo.state) {
+            switch (state) {
                 case ProcessState::Running:  state_color = Color::Green; break;
                 case ProcessState::Starting: state_color = Color::Yellow; break;
                 case ProcessState::Crashed:  state_color = Color::Red; break;
@@ -136,7 +150,7 @@ ftxui::Component LaunchScreen::component() {
 
             // Uptime
             std::string uptime = "-";
-            if (pinfo.state == ProcessState::Running) {
+            if (state == ProcessState::Running) {
                 auto dur = std::chrono::steady_clock::now() - pinfo.started_at;
                 auto secs = std::chrono::duration_cast<std::chrono::seconds>(dur).count();
                 if (secs >= 3600) {
@@ -159,7 +173,7 @@ ftxui::Component LaunchScreen::component() {
             auto row = hbox({
                 text(prefix + proc_name) | size(WIDTH, EQUAL, 32)
                     | (is_selected ? bold : nothing),
-                text(processStateStr(pinfo.state)) | color(state_color) | size(WIDTH, EQUAL, 12),
+                text(processStateStr(state)) | color(state_color) | size(WIDTH, EQUAL, 12),
                 text(pid_str) | size(WIDTH, EQUAL, 10),
                 text(uptime) | size(WIDTH, EQUAL, 15),
                 text(entry.restart_policy) | dim | size(WIDTH, EQUAL, 12),
@@ -207,7 +221,7 @@ ftxui::Component LaunchScreen::component() {
             // Toggle: start if stopped, stop if running
             std::string proc_name = profile.entries[selected_entry_].displayName();
             auto info = proc_mgr_->processInfo(proc_name);
-            if (info.state == ProcessState::Running || info.state == ProcessState::Starting) {
+            if (info.state.load() == ProcessState::Running || info.state.load() == ProcessState::Starting) {
                 stopSelected();
             } else {
                 startSelected();

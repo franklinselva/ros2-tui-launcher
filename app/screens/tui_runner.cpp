@@ -57,7 +57,6 @@ void TuiRunner::run() {
     auto tab_content = Container::Tab(std::move(screen_components), &selected_tab);
 
     // Layout: tab bar on top, content below.
-    // Use Container::Vertical so focus flows to tab_content (the active screen).
     auto main_component = Container::Vertical({
         tab_toggle,
         tab_content,
@@ -85,19 +84,11 @@ void TuiRunner::run() {
         }) | border;
     });
 
-    // Global key handler — only catches Q (quit) and tab hotkeys (uppercase).
-    // This wraps the outside, but screen-level CatchEvent components are inside
-    // main_component and get events via FTXUI's component tree propagation.
-    // However, CatchEvent on the outside intercepts FIRST in FTXUI.
-    //
-    // Solution: Use a two-pass approach. First let the inner component try to handle
-    // the event. If it didn't handle it, then check for global keys.
+    // Global key handler — wraps the outside.
+    // FTXUI's CatchEvent on the outside intercepts FIRST.
+    // We only handle quit and tab-switch keys here. All other events
+    // fall through to FTXUI's normal component tree propagation (returning false).
     auto with_global_keys = CatchEvent(main_renderer, [&](Event event) -> bool {
-        // First, let the active screen component try to handle the event.
-        // We do this by forwarding to tab_content. If it returns true, it handled it.
-        bool handled = tab_content->OnEvent(event);
-        if (handled) return true;
-
         // Quit (q or Q)
         if (event.is_character() &&
             (event.character() == "q" || event.character() == "Q")) {
@@ -110,7 +101,7 @@ void TuiRunner::run() {
         // Tab switching — match both upper and lowercase hotkeys
         if (event.is_character()) {
             std::string ch = event.character();
-            char ch_upper = std::toupper(ch[0]);
+            char ch_upper = static_cast<char>(std::toupper(ch[0]));
             for (int i = 0; i < (int)screens_.size(); i++) {
                 auto hk = screens_[i]->hotkey();
                 if (!hk.empty() && ch_upper == std::toupper(hk[0])) {
@@ -132,17 +123,20 @@ void TuiRunner::run() {
             }
         }
 
+        // Let FTXUI propagate to inner components (screen-level CatchEvent handlers)
         return false;
     });
 
     auto screen = ScreenInteractive::Fullscreen();
     active_screen_ = &screen;
 
-    // Background tick thread (~30 Hz)
+    // Background tick thread (~30 Hz) — only ticks the active screen
     std::thread tick_thread([&] {
         while (running_.load()) {
-            for (auto& s : screens_)
-                s->tick();
+            int active = selected_tab;
+            if (active >= 0 && active < (int)screens_.size()) {
+                screens_[active]->tick();
+            }
             screen.Post(Event::Custom);
             std::this_thread::sleep_for(std::chrono::milliseconds(33));
         }
@@ -158,7 +152,7 @@ void TuiRunner::run() {
 std::string TuiRunner::buildHotkeyHint() const {
     std::string hint;
     for (size_t i = 0; i < screens_.size(); i++) {
-        hint += "[" + std::to_string(i + 1) + "/" + screens_[i]->hotkey() + "]"
+        hint += "[" + std::to_string(i + 1) + "/" + screens_[i]->hotkey() + "] "
              + screens_[i]->name() + "  ";
     }
     return hint;

@@ -66,6 +66,7 @@ void LogAggregator::rosoutCallback(const rcl_interfaces::msg::Log::SharedPtr msg
         std::chrono::duration_cast<std::chrono::system_clock::duration>(sec + nsec));
 
     std::lock_guard lock(mutex_);
+    known_sources_.insert(entry.source);
     entries_.push_back(std::move(entry));
     while (entries_.size() > max_lines_) {
         entries_.pop_front();
@@ -145,6 +146,7 @@ void LogAggregator::pushRaw(const std::string& source, const std::string& messag
     entry.message = std::string(line);
 
     std::lock_guard lock(mutex_);
+    known_sources_.insert(entry.source);
     entries_.push_back(std::move(entry));
     while (entries_.size() > max_lines_) {
         entries_.pop_front();
@@ -177,11 +179,7 @@ std::vector<LogEntry> LogAggregator::all() const {
 
 std::vector<std::string> LogAggregator::sources() const {
     std::lock_guard lock(mutex_);
-    std::set<std::string> unique;
-    for (const auto& e : entries_) {
-        unique.insert(e.source);
-    }
-    return {unique.begin(), unique.end()};
+    return {known_sources_.begin(), known_sources_.end()};
 }
 
 size_t LogAggregator::size() const {
@@ -192,6 +190,7 @@ size_t LogAggregator::size() const {
 void LogAggregator::clear() {
     std::lock_guard lock(mutex_);
     entries_.clear();
+    known_sources_.clear();
 }
 
 }  // namespace rtl

@@ -3,6 +3,7 @@
 #include <ftxui/dom/elements.hpp>
 #include <ftxui/component/component.hpp>
 #include <ftxui/component/event.hpp>
+#include <ftxui/screen/terminal.hpp>
 
 #include <algorithm>
 #include <iomanip>
@@ -30,7 +31,7 @@ ftxui::Component TopicScreen::component() {
 
         // Header
         auto header = hbox({
-            text(" TOPIC") | bold | size(WIDTH, EQUAL, 40),
+            text("   TOPIC") | bold | size(WIDTH, EQUAL, 40),
             text("TYPE") | bold | size(WIDTH, EQUAL, 30),
             text("Hz") | bold | size(WIDTH, EQUAL, 10),
             text("EXPECTED") | bold | size(WIDTH, EQUAL, 10),
@@ -39,8 +40,7 @@ ftxui::Component TopicScreen::component() {
             text("STATUS") | bold | size(WIDTH, EQUAL, 10),
         });
 
-        Elements rows;
-
+        // Filter topics
         auto topics = cached_topics_;
         if (!show_all_) {
             topics.erase(
@@ -51,7 +51,16 @@ ftxui::Component TopicScreen::component() {
                 topics.end());
         }
 
-        for (const auto& t : topics) {
+        // Scrollable viewport
+        auto term_size = Terminal::Size();
+        int max_visible = std::max(3, term_size.dimy - 12);
+        int total = (int)topics.size();
+        int start = std::clamp(scroll_offset_, 0, std::max(0, total - max_visible));
+        int end = std::min(start + max_visible, total);
+
+        Elements rows;
+        for (int idx = start; idx < end; ++idx) {
+            const auto& t = topics[idx];
             std::ostringstream hz_ss;
             hz_ss << std::fixed << std::setprecision(1) << t.hz;
 
@@ -83,16 +92,24 @@ ftxui::Component TopicScreen::component() {
                 type_display = type_display.substr(0, 25) + "...";
             }
 
-            rows.push_back(
-                hbox({
-                    text(" " + t.name) | size(WIDTH, EQUAL, 40),
-                    text(type_display) | dim | size(WIDTH, EQUAL, 30),
-                    text(hz_ss.str()) | color(t.stale ? Color::Red : Color::White) | size(WIDTH, EQUAL, 10),
-                    text(exp_ss.str()) | dim | size(WIDTH, EQUAL, 10),
-                    text(std::to_string(t.publisher_count)) | size(WIDTH, EQUAL, 6),
-                    text(std::to_string(t.subscriber_count)) | size(WIDTH, EQUAL, 6),
-                    text(status) | color(status_color) | size(WIDTH, EQUAL, 10),
-                }));
+            bool is_selected = (idx == selected_);
+            std::string prefix = is_selected ? " > " : "   ";
+
+            auto row = hbox({
+                text(prefix + t.name) | size(WIDTH, EQUAL, 40),
+                text(type_display) | dim | size(WIDTH, EQUAL, 30),
+                text(hz_ss.str()) | color(t.stale ? Color::Red : Color::White) | size(WIDTH, EQUAL, 10),
+                text(exp_ss.str()) | dim | size(WIDTH, EQUAL, 10),
+                text(std::to_string(t.publisher_count)) | size(WIDTH, EQUAL, 6),
+                text(std::to_string(t.subscriber_count)) | size(WIDTH, EQUAL, 6),
+                text(status) | color(status_color) | size(WIDTH, EQUAL, 10),
+            });
+
+            if (is_selected) {
+                row = row | inverted;
+            }
+
+            rows.push_back(row);
         }
 
         if (topics.empty()) {
@@ -100,6 +117,13 @@ ftxui::Component TopicScreen::component() {
             if (!show_all_) {
                 rows.push_back(text(" Press [a] to show all topics") | dim);
             }
+        }
+
+        // Scroll indicator
+        std::string scroll_info;
+        if (total > max_visible) {
+            scroll_info = " [" + std::to_string(start + 1) + "-" + std::to_string(end)
+                        + "/" + std::to_string(total) + "]";
         }
 
         return vbox({
@@ -110,7 +134,7 @@ ftxui::Component TopicScreen::component() {
             vbox(std::move(rows)) | flex,
             separator(),
             hbox({
-                text(" [a] All topics  [w] Watched only") | dim,
+                text(" [a] All topics  [w] Watched only  [Up/Down] Select  [PgUp/PgDn] Scroll" + scroll_info) | dim,
             }),
         });
     });
@@ -124,6 +148,44 @@ ftxui::Component TopicScreen::component() {
         if (event.is_character() && event.character() == "w") {
             std::lock_guard lock(mutex_);
             show_all_ = false;
+            return true;
+        }
+        if (event == Event::ArrowUp || event == Event::Character("k")) {
+            std::lock_guard lock(mutex_);
+            if (selected_ > 0) {
+                selected_--;
+                if (selected_ < scroll_offset_) scroll_offset_ = selected_;
+            }
+            return true;
+        }
+        if (event == Event::ArrowDown || event == Event::Character("j")) {
+            std::lock_guard lock(mutex_);
+            int count = (int)cached_topics_.size();
+            if (selected_ < count - 1) {
+                selected_++;
+                auto term_size = Terminal::Size();
+                int max_visible = std::max(3, term_size.dimy - 12);
+                if (selected_ >= scroll_offset_ + max_visible) {
+                    scroll_offset_ = selected_ - max_visible + 1;
+                }
+            }
+            return true;
+        }
+        if (event == Event::PageUp) {
+            std::lock_guard lock(mutex_);
+            auto term_size = Terminal::Size();
+            int max_visible = std::max(3, term_size.dimy - 12);
+            scroll_offset_ = std::max(0, scroll_offset_ - max_visible);
+            selected_ = scroll_offset_;
+            return true;
+        }
+        if (event == Event::PageDown) {
+            std::lock_guard lock(mutex_);
+            auto term_size = Terminal::Size();
+            int max_visible = std::max(3, term_size.dimy - 12);
+            int count = (int)cached_topics_.size();
+            scroll_offset_ = std::min(scroll_offset_ + max_visible, std::max(0, count - max_visible));
+            selected_ = scroll_offset_;
             return true;
         }
         return false;

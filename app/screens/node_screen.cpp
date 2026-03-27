@@ -85,6 +85,7 @@ ftxui::Component NodeScreen::component() {
             return true;
         }
         if (event.is_character() && event.character() == "r") {
+            // Manual refresh — the tick thread also refreshes (throttled to 2s)
             inspector_->refresh();
             return true;
         }
@@ -93,6 +94,7 @@ ftxui::Component NodeScreen::component() {
 }
 
 void NodeScreen::tick() {
+    // refresh() is internally throttled to 2s intervals
     inspector_->refresh();
     auto nodes = inspector_->nodes();
 

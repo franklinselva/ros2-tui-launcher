@@ -28,10 +28,27 @@ const char* processStateStr(ProcessState s);
 struct ProcessInfo {
     std::string name;
     pid_t pid = -1;
-    ProcessState state = ProcessState::Stopped;
-    int exit_code = 0;
+    std::atomic<ProcessState> state{ProcessState::Stopped};
+    std::atomic<int> exit_code{0};
     std::chrono::steady_clock::time_point started_at;
     std::string restart_policy;
+
+    ProcessInfo() = default;
+    ProcessInfo(const ProcessInfo& o)
+        : name(o.name), pid(o.pid)
+        , state(o.state.load()), exit_code(o.exit_code.load())
+        , started_at(o.started_at), restart_policy(o.restart_policy) {}
+    ProcessInfo& operator=(const ProcessInfo& o) {
+        if (this != &o) {
+            name = o.name;
+            pid = o.pid;
+            state.store(o.state.load());
+            exit_code.store(o.exit_code.load());
+            started_at = o.started_at;
+            restart_policy = o.restart_policy;
+        }
+        return *this;
+    }
 };
 
 /// Callback for log lines from child processes.

@@ -4,6 +4,7 @@
 
 #include <csignal>
 #include <cstring>
+#include <fcntl.h>
 #include <sys/wait.h>
 #include <unistd.h>
 
@@ -71,10 +72,16 @@ bool ProcessManager::start(const LaunchEntry& entry) {
         }
     }
 
-    // Create pipes for stdout and stderr
+    // Create pipes with O_CLOEXEC to prevent FD leaks into child processes
     int stdout_pipe[2], stderr_pipe[2];
-    if (pipe(stdout_pipe) != 0 || pipe(stderr_pipe) != 0) {
-        spdlog::error("Failed to create pipes for '{}'", name);
+    if (pipe2(stdout_pipe, O_CLOEXEC) != 0) {
+        spdlog::error("Failed to create stdout pipe for '{}': {}", name, strerror(errno));
+        return false;
+    }
+    if (pipe2(stderr_pipe, O_CLOEXEC) != 0) {
+        spdlog::error("Failed to create stderr pipe for '{}': {}", name, strerror(errno));
+        close(stdout_pipe[0]);
+        close(stdout_pipe[1]);
         return false;
     }
 
@@ -87,7 +94,7 @@ bool ProcessManager::start(const LaunchEntry& entry) {
     }
 
     if (pid == 0) {
-        // Child process
+        // Child process — dup2 clears O_CLOEXEC on the target FDs
         close(stdout_pipe[0]);
         close(stderr_pipe[0]);
         dup2(stdout_pipe[1], STDOUT_FILENO);
@@ -123,7 +130,7 @@ bool ProcessManager::start(const LaunchEntry& entry) {
     proc->entry = entry;
     proc->info.name = name;
     proc->info.pid = pid;
-    proc->info.state = ProcessState::Running;
+    proc->info.state.store(ProcessState::Running);
     proc->info.started_at = std::chrono::steady_clock::now();
     proc->info.restart_policy = entry.restart_policy;
     proc->stdout_fd = stdout_pipe[0];
@@ -156,7 +163,7 @@ void ProcessManager::stop(const std::string& name, std::chrono::milliseconds tim
 
     if (!proc->active.load()) return;
 
-    proc->info.state = ProcessState::Stopping;
+    proc->info.state.store(ProcessState::Stopping);
 
     // Send SIGINT to the process group
     if (proc->info.pid > 0) {
@@ -226,24 +233,28 @@ void ProcessManager::readerThread(std::shared_ptr<ManagedProcess> proc) {
     auto readFd = [&](int fd) {
         std::array<char, 4096> buf;
         std::string line_buffer;
+        size_t search_start = 0;
 
         while (proc->active.load()) {
             ssize_t n = read(fd, buf.data(), buf.size());
             if (n <= 0) break;
 
-            line_buffer.append(buf.data(), n);
+            line_buffer.append(buf.data(), static_cast<size_t>(n));
 
-            // Process complete lines
+            // Process complete lines efficiently — track search position
             size_t pos;
-            while ((pos = line_buffer.find('\n')) != std::string::npos) {
+            while ((pos = line_buffer.find('\n', search_start)) != std::string::npos) {
                 std::string line = line_buffer.substr(0, pos);
-                line_buffer.erase(0, pos + 1);
 
                 std::lock_guard lock(mutex_);
                 if (log_callback_) {
                     log_callback_(proc->info.name, line);
                 }
+
+                line_buffer.erase(0, pos + 1);
+                search_start = 0;
             }
+            search_start = line_buffer.size();
         }
 
         // Flush remaining
@@ -271,32 +282,40 @@ void ProcessManager::waitThread(std::shared_ptr<ManagedProcess> proc) {
     proc->active.store(false);
 
     if (WIFEXITED(status)) {
-        proc->info.exit_code = WEXITSTATUS(status);
-        if (proc->info.state != ProcessState::Stopping) {
-            proc->info.state = (proc->info.exit_code == 0)
+        proc->info.exit_code.store(WEXITSTATUS(status));
+        if (proc->info.state.load() != ProcessState::Stopping) {
+            proc->info.state.store((proc->info.exit_code.load() == 0)
                 ? ProcessState::Stopped
-                : ProcessState::Crashed;
+                : ProcessState::Crashed);
         } else {
-            proc->info.state = ProcessState::Stopped;
+            proc->info.state.store(ProcessState::Stopped);
         }
     } else if (WIFSIGNALED(status)) {
-        proc->info.exit_code = -WTERMSIG(status);
-        proc->info.state = (proc->info.state == ProcessState::Stopping)
+        proc->info.exit_code.store(-WTERMSIG(status));
+        proc->info.state.store((proc->info.state.load() == ProcessState::Stopping)
             ? ProcessState::Stopped
-            : ProcessState::Crashed;
+            : ProcessState::Crashed);
     }
 
-    spdlog::info("Process '{}' exited (code={})", proc->info.name, proc->info.exit_code);
+    spdlog::info("Process '{}' exited (code={})", proc->info.name, proc->info.exit_code.load());
 
-    // Handle restart policy
-    if (proc->info.state == ProcessState::Crashed) {
+    // Handle restart policy — actually perform the restart
+    if (proc->info.state.load() == ProcessState::Crashed) {
         if (proc->entry.restart_policy == "always" ||
             proc->entry.restart_policy == "on-failure") {
             spdlog::info("Restarting '{}' per restart_policy='{}'",
                          proc->info.name, proc->entry.restart_policy);
-            // Note: restart is handled by the caller checking process state
-            // We don't restart here to avoid recursive threading issues
+            // Detach a thread to avoid blocking waitThread while restart runs stop+start
+            std::thread([this, entry = proc->entry]() {
+                start(entry);
+            }).detach();
         }
+    } else if (proc->entry.restart_policy == "always") {
+        spdlog::info("Restarting '{}' per restart_policy='always'",
+                     proc->info.name);
+        std::thread([this, entry = proc->entry]() {
+            start(entry);
+        }).detach();
     }
 }
 

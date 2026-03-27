@@ -32,6 +32,7 @@ private:
     int scroll_offset_ = 0;
     bool auto_scroll_ = true;
     bool search_mode_ = false;
+    int viewport_height_ = 40;      // updated dynamically from terminal size
 };
 
 }  // namespace rtl::tui

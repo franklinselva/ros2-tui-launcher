@@ -14,6 +14,9 @@ TopicMonitor::TopicMonitor(
 
 TopicMonitor::~TopicMonitor() {
     stop();
+    // Clear subscriptions before node is potentially destroyed
+    std::lock_guard lock(mutex_);
+    hz_trackers_.clear();
 }
 
 void TopicMonitor::setWatchedTopics(
@@ -43,37 +46,39 @@ void TopicMonitor::setWatchedTopics(
 
         HzTracker tracker;
         tracker.expected_hz = expected_hz;
+        tracker.incoming = std::make_unique<rigtorp::SPSCQueue<
+            std::chrono::steady_clock::time_point>>(HzTracker::kQueueCapacity);
 
-        // Find topic type from the graph
-        auto topic_types = node_->get_topic_names_and_types();
-        std::string topic_type;
-        if (auto it = topic_types.find(topic_name); it != topic_types.end() && !it->second.empty()) {
-            topic_type = it->second[0];
-        }
-
-        if (!topic_type.empty()) {
-            try {
-                tracker.subscription = node_->create_generic_subscription(
-                    topic_name, topic_type,
-                    rclcpp::SensorDataQoS(),
-                    [this, topic_name](std::shared_ptr<rclcpp::SerializedMessage>) {
-                        std::lock_guard lock(mutex_);
-                        if (auto it = hz_trackers_.find(topic_name); it != hz_trackers_.end()) {
-                            it->second.timestamps.push_back(std::chrono::steady_clock::now());
-                            while (it->second.timestamps.size() > HzTracker::kMaxSamples) {
-                                it->second.timestamps.pop_front();
-                            }
-                        }
-                    });
-                spdlog::debug("Subscribed to '{}' [{}] for Hz monitoring", topic_name, topic_type);
-            } catch (const std::exception& e) {
-                spdlog::warn("Failed to subscribe to '{}': {}", topic_name, e.what());
-            }
-        } else {
-            spdlog::debug("Topic '{}' not yet advertised, will retry", topic_name);
-        }
-
+        tryCreateSubscription(topic_name, tracker);
         hz_trackers_[topic_name] = std::move(tracker);
+    }
+}
+
+void TopicMonitor::tryCreateSubscription(const std::string& name, HzTracker& tracker) {
+    // Query topic type outside lock-sensitive path
+    auto topic_types = node_->get_topic_names_and_types();
+    std::string topic_type;
+    if (auto it = topic_types.find(name); it != topic_types.end() && !it->second.empty()) {
+        topic_type = it->second[0];
+    }
+
+    if (topic_type.empty()) {
+        spdlog::debug("Topic '{}' not yet advertised, will retry", name);
+        return;
+    }
+
+    try {
+        auto* queue_ptr = tracker.incoming.get();
+        tracker.subscription = node_->create_generic_subscription(
+            name, topic_type,
+            rclcpp::SensorDataQoS(),
+            [queue_ptr](std::shared_ptr<rclcpp::SerializedMessage>) {
+                // Lock-free push — if queue is full, drop oldest sample
+                queue_ptr->try_push(std::chrono::steady_clock::now());
+            });
+        spdlog::debug("Subscribed to '{}' [{}] for Hz monitoring", name, topic_type);
+    } catch (const std::exception& e) {
+        spdlog::warn("Failed to subscribe to '{}': {}", name, e.what());
     }
 }
 
@@ -106,10 +111,21 @@ void TopicMonitor::pollLoop() {
     while (running_.load()) {
         refreshTopicList();
 
-        // Compute Hz for watched topics
+        // Drain SPSCQueues and compute Hz for watched topics
         {
             std::lock_guard lock(mutex_);
             for (auto& [name, tracker] : hz_trackers_) {
+                // Drain lock-free queue into local timestamp deque
+                auto* ts_ptr = tracker.incoming->front();
+                while (ts_ptr != nullptr) {
+                    tracker.timestamps.push_back(*ts_ptr);
+                    tracker.incoming->pop();
+                    ts_ptr = tracker.incoming->front();
+                }
+                while (tracker.timestamps.size() > HzTracker::kMaxSamples) {
+                    tracker.timestamps.pop_front();
+                }
+
                 double hz = computeHz(tracker);
                 auto& info = topics_[name];
                 info.name = name;
@@ -120,24 +136,7 @@ void TopicMonitor::pollLoop() {
 
                 // Retry subscription if it was null (topic wasn't advertised before)
                 if (!tracker.subscription) {
-                    auto topic_types = node_->get_topic_names_and_types();
-                    if (auto it = topic_types.find(name);
-                        it != topic_types.end() && !it->second.empty()) {
-                        try {
-                            tracker.subscription = node_->create_generic_subscription(
-                                name, it->second[0],
-                                rclcpp::SensorDataQoS(),
-                                [this, name](std::shared_ptr<rclcpp::SerializedMessage>) {
-                                    std::lock_guard lock(mutex_);
-                                    if (auto it2 = hz_trackers_.find(name); it2 != hz_trackers_.end()) {
-                                        it2->second.timestamps.push_back(std::chrono::steady_clock::now());
-                                        while (it2->second.timestamps.size() > HzTracker::kMaxSamples) {
-                                            it2->second.timestamps.pop_front();
-                                        }
-                                    }
-                                });
-                        } catch (...) {}
-                    }
+                    tryCreateSubscription(name, tracker);
                 }
             }
         }
@@ -147,17 +146,43 @@ void TopicMonitor::pollLoop() {
 }
 
 void TopicMonitor::refreshTopicList() {
+    // Query graph APIs outside the mutex
     auto topic_types = node_->get_topic_names_and_types();
 
-    std::lock_guard lock(mutex_);
+    struct TopicCounts {
+        std::string type;
+        size_t pub_count = 0;
+        size_t sub_count = 0;
+    };
+    std::unordered_map<std::string, TopicCounts> fresh;
+    fresh.reserve(topic_types.size());
+
     for (const auto& [name, types] : topic_types) {
+        TopicCounts tc;
+        if (!types.empty()) tc.type = types[0];
+        tc.pub_count = node_->count_publishers(name);
+        tc.sub_count = node_->count_subscribers(name);
+        fresh[name] = std::move(tc);
+    }
+
+    // Now hold the lock briefly to swap in the data and prune stale topics
+    std::lock_guard lock(mutex_);
+    // Prune topics no longer in the graph (unless they are watched)
+    for (auto it = topics_.begin(); it != topics_.end();) {
+        if (fresh.find(it->first) == fresh.end() &&
+            hz_trackers_.find(it->first) == hz_trackers_.end()) {
+            it = topics_.erase(it);
+        } else {
+            ++it;
+        }
+    }
+
+    for (const auto& [name, tc] : fresh) {
         auto& info = topics_[name];
         info.name = name;
-        if (!types.empty()) {
-            info.type = types[0];
-        }
-        info.publisher_count = node_->count_publishers(name);
-        info.subscriber_count = node_->count_subscribers(name);
+        info.type = tc.type;
+        info.publisher_count = static_cast<int>(tc.pub_count);
+        info.subscriber_count = static_cast<int>(tc.sub_count);
         info.last_updated = std::chrono::steady_clock::now();
     }
 }
@@ -171,7 +196,8 @@ double TopicMonitor::computeHz(const HzTracker& tracker) const {
 
     std::vector<double> intervals;
     for (size_t i = 1; i < tracker.timestamps.size(); ++i) {
-        if (tracker.timestamps[i] < cutoff) continue;
+        // Both endpoints must be after cutoff for a valid interval
+        if (tracker.timestamps[i] < cutoff || tracker.timestamps[i - 1] < cutoff) continue;
         auto dt = std::chrono::duration<double>(
             tracker.timestamps[i] - tracker.timestamps[i - 1]);
         intervals.push_back(dt.count());
