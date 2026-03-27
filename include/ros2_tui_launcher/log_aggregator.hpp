@@ -67,6 +67,10 @@ public:
     /// Total entry count.
     size_t size() const;
 
+    /// Generation counter — incremented on every mutation.
+    /// Callers can compare to skip redundant filtered() calls.
+    uint64_t generation() const;
+
     /// Clear all entries.
     void clear();
 
@@ -79,6 +83,7 @@ private:
     std::deque<LogEntry> entries_;
     std::set<std::string> known_sources_;
     size_t max_lines_;
+    uint64_t generation_ = 0;
 };
 
 }  // namespace rtl

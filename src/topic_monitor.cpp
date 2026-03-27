@@ -3,7 +3,6 @@
 #include <spdlog/spdlog.h>
 
 #include <algorithm>
-#include <numeric>
 
 namespace rtl {
 
@@ -191,22 +190,24 @@ double TopicMonitor::computeHz(const HzTracker& tracker) const {
     if (tracker.timestamps.size() < 2) return 0.0;
 
     // Only consider messages from the last 5 seconds
+    // Compute running sum in-place without allocating a vector
     auto now = std::chrono::steady_clock::now();
     auto cutoff = now - std::chrono::seconds(5);
 
-    std::vector<double> intervals;
+    double interval_sum = 0.0;
+    size_t interval_count = 0;
+
     for (size_t i = 1; i < tracker.timestamps.size(); ++i) {
-        // Both endpoints must be after cutoff for a valid interval
         if (tracker.timestamps[i] < cutoff || tracker.timestamps[i - 1] < cutoff) continue;
         auto dt = std::chrono::duration<double>(
             tracker.timestamps[i] - tracker.timestamps[i - 1]);
-        intervals.push_back(dt.count());
+        interval_sum += dt.count();
+        ++interval_count;
     }
 
-    if (intervals.empty()) return 0.0;
+    if (interval_count == 0) return 0.0;
 
-    double avg_interval = std::accumulate(intervals.begin(), intervals.end(), 0.0)
-                          / intervals.size();
+    double avg_interval = interval_sum / static_cast<double>(interval_count);
     return (avg_interval > 0) ? 1.0 / avg_interval : 0.0;
 }
 

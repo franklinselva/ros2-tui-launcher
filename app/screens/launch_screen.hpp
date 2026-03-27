@@ -6,6 +6,7 @@
 #include "ros2_tui_launcher/process_manager.hpp"
 #include "ros2_tui_launcher/system_monitor.hpp"
 
+#include <future>
 #include <mutex>
 #include <string>
 #include <unordered_map>
@@ -22,6 +23,7 @@ public:
         int* active_profile_idx,
         ProcessManager* proc_mgr,
         SystemMonitor* sys_mon);
+    ~LaunchScreen();
 
     std::string name() const override { return "Launch"; }
     std::string hotkey() const override { return "L"; }
@@ -50,7 +52,7 @@ private:
     SystemMonitor* sys_mon_;
 
     std::mutex mutex_;
-    std::vector<ProcessInfo> cached_procs_;
+    std::unordered_map<std::string, ProcessInfo> cached_procs_;
     SystemInfo cached_sys_;
     std::unordered_map<std::string, ProcessTreeNode> cached_trees_;
 
@@ -58,6 +60,12 @@ private:
     std::unordered_map<std::string, bool> expanded_;
 
     ScrollableList scroll_list_;
+
+    /// Track background async operations so they are joined before destruction.
+    std::mutex bg_mutex_;
+    std::vector<std::future<void>> bg_futures_;
+    void launchAsync(std::function<void()> fn);
+    void cleanupFinishedFutures();
 };
 
 }  // namespace rtl::tui

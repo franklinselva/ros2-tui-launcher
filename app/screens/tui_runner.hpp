@@ -49,7 +49,7 @@ private:
     std::string title_;
     std::vector<std::shared_ptr<Screen>> screens_;
     std::atomic<bool> running_{false};
-    ftxui::ScreenInteractive* active_screen_ = nullptr;
+    std::atomic<ftxui::ScreenInteractive*> active_screen_{nullptr};
 
     mutable std::mutex status_mutex_;
     std::string status_text_ = "Ready";

@@ -5,6 +5,7 @@
 #include <atomic>
 #include <chrono>
 #include <functional>
+#include <future>
 #include <mutex>
 #include <string>
 #include <thread>
@@ -96,6 +97,12 @@ private:
     mutable std::mutex mutex_;
     std::unordered_map<std::string, std::shared_ptr<ManagedProcess>> procs_;
     LogCallback log_callback_;
+
+    /// Tracked restart futures — cleaned up periodically and joined in destructor.
+    std::mutex restart_mutex_;
+    std::vector<std::future<void>> restart_futures_;
+    void cleanupRestartFutures();
+    void waitForRestartFutures();
 };
 
 }  // namespace rtl

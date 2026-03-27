@@ -23,11 +23,12 @@
 
 namespace {
 // Forward-declared so the signal handler can request TUI exit
-rtl::tui::TuiRunner* g_tui = nullptr;
+std::atomic<rtl::tui::TuiRunner*> g_tui{nullptr};
 
 void signalHandler(int) {
-    if (g_tui) {
-        g_tui->requestStop();
+    auto* tui = g_tui.load(std::memory_order_acquire);
+    if (tui) {
+        tui->requestStop();
     }
 }
 }  // namespace
@@ -136,11 +137,16 @@ int main(int argc, char* argv[]) {
 
     // Build and run TUI
     rtl::tui::TuiRunner tui("ros2-tui-launcher");
-    g_tui = &tui;
+    g_tui.store(&tui, std::memory_order_release);
 
     // Install signal handlers AFTER creating TUI so they can call requestStop()
-    std::signal(SIGINT, signalHandler);
-    std::signal(SIGTERM, signalHandler);
+    // Use sigaction instead of std::signal for thread-safe signal handling
+    struct sigaction sa{};
+    sa.sa_handler = signalHandler;
+    sigemptyset(&sa.sa_mask);
+    sa.sa_flags = SA_RESTART;
+    sigaction(SIGINT, &sa, nullptr);
+    sigaction(SIGTERM, &sa, nullptr);
 
     tui.addScreen<rtl::tui::LaunchScreen>(&profiles, &active_profile, &proc_mgr, &sys_mon);
     tui.addScreen<rtl::tui::LogScreen>(&log_agg, &node_inspector);
@@ -155,7 +161,7 @@ int main(int argc, char* argv[]) {
         spdlog::error("TUI error: {}", e.what());
     }
 
-    g_tui = nullptr;
+    g_tui.store(nullptr, std::memory_order_release);
 
     // Cleanup
     spdlog::info("Shutting down...");

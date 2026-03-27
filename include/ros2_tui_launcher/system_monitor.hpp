@@ -89,9 +89,15 @@ private:
     void* stat_handle_ = nullptr;
     void* mem_handle_ = nullptr;
 
+    // NVML state (opaque handles, valid only when nvml_initialized_ is true)
+    bool nvml_initialized_ = false;
+    void* nvml_device_ = nullptr;  // nvmlDevice_t
+
     mutable std::mutex mutex_;
     SystemInfo cached_system_;
     std::unordered_map<pid_t, ProcessStats> cached_procs_;
+    /// Pre-built parent→children index for O(1) child lookup in buildTree().
+    std::unordered_map<pid_t, std::vector<pid_t>> children_index_;
 
     // Per-process GPU memory from nvidia-smi
     std::unordered_map<pid_t, unsigned long> gpu_proc_mem_;

@@ -5,6 +5,10 @@
 #include <libproc2/meminfo.h>
 #include <libproc2/misc.h>
 
+#ifdef RTL_HAS_NVML
+#include <nvml.h>
+#endif
+
 #include <spdlog/spdlog.h>
 
 #include <cstdio>
@@ -74,6 +78,11 @@ SystemMonitor::~SystemMonitor() {
         auto p = reinterpret_cast<struct meminfo_info**>(&mem_handle_);
         procps_meminfo_unref(p);
     }
+#ifdef RTL_HAS_NVML
+    if (nvml_initialized_) {
+        nvmlShutdown();
+    }
+#endif
 }
 
 void SystemMonitor::detectSystemInfo() {
@@ -102,44 +111,74 @@ void SystemMonitor::detectSystemInfo() {
     cached_system_.cpu_cores = physical_ids > 0 ? physical_ids : static_cast<int>(num_cpus_);
     cached_system_.cpu_threads = static_cast<int>(num_cpus_);
 
-    // GPU detection via nvidia-smi
-    FILE* fp = popen("nvidia-smi --query-gpu=name,memory.total --format=csv,noheader,nounits 2>/dev/null", "r");
-    if (fp) {
-        char buf[256];
-        if (fgets(buf, sizeof(buf), fp)) {
-            std::string result(buf);
-            // Format: "GPU Name, 8192"
-            auto comma = result.find(',');
-            if (comma != std::string::npos) {
-                cached_system_.gpu_name = result.substr(0, comma);
-                // Trim whitespace
-                while (!cached_system_.gpu_name.empty() && cached_system_.gpu_name.back() == ' ')
-                    cached_system_.gpu_name.pop_back();
-                try {
-                    cached_system_.gpu_mem_total_mb = std::stoul(result.substr(comma + 1));
-                } catch (...) {}
-                cached_system_.has_gpu = true;
+    // GPU detection — prefer NVML, fall back to nvidia-smi with timeout
+#ifdef RTL_HAS_NVML
+    if (nvmlInit_v2() == NVML_SUCCESS) {
+        nvmlDevice_t device;
+        if (nvmlDeviceGetHandleByIndex(0, &device) == NVML_SUCCESS) {
+            nvml_initialized_ = true;
+            nvml_device_ = reinterpret_cast<void*>(device);
+
+            char name_buf[NVML_DEVICE_NAME_V2_BUFFER_SIZE];
+            if (nvmlDeviceGetName(device, name_buf, sizeof(name_buf)) == NVML_SUCCESS) {
+                cached_system_.gpu_name = name_buf;
             }
+
+            nvmlMemory_t mem;
+            if (nvmlDeviceGetMemoryInfo(device, &mem) == NVML_SUCCESS) {
+                cached_system_.gpu_mem_total_mb = mem.total / (1024 * 1024);
+            }
+            cached_system_.has_gpu = true;
+        } else {
+            nvmlShutdown();
         }
-        pclose(fp);
+    }
+#endif
+
+    // Fallback: nvidia-smi with timeout (only if NVML unavailable)
+    if (!nvml_initialized_) {
+        FILE* fp = popen("timeout 2 nvidia-smi --query-gpu=name,memory.total "
+                         "--format=csv,noheader,nounits 2>/dev/null", "r");
+        if (fp) {
+            char buf[256];
+            if (fgets(buf, sizeof(buf), fp)) {
+                std::string result(buf);
+                auto comma = result.find(',');
+                if (comma != std::string::npos) {
+                    cached_system_.gpu_name = result.substr(0, comma);
+                    while (!cached_system_.gpu_name.empty() && cached_system_.gpu_name.back() == ' ')
+                        cached_system_.gpu_name.pop_back();
+                    try {
+                        cached_system_.gpu_mem_total_mb = std::stoul(result.substr(comma + 1));
+                    } catch (...) {}
+                    cached_system_.has_gpu = true;
+                }
+            }
+            pclose(fp);
+        }
     }
 }
 
 void SystemMonitor::refresh() {
     auto now = std::chrono::steady_clock::now();
 
-    bool do_proc = (now - last_proc_refresh_ >= kProcInterval);
-    bool do_gpu = cached_system_.has_gpu && (now - last_gpu_refresh_ >= kGpuInterval);
+    bool do_proc = false;
+    bool do_gpu = false;
+    {
+        std::lock_guard lock(mutex_);
+        do_proc = (now - last_proc_refresh_ >= kProcInterval);
+        do_gpu = cached_system_.has_gpu && (now - last_gpu_refresh_ >= kGpuInterval);
+        if (do_proc) last_proc_refresh_ = now;
+        if (do_gpu) last_gpu_refresh_ = now;
+    }
 
     if (do_proc) {
-        last_proc_refresh_ = now;
         refreshSystemCpu();   // Must come first — single stat read, computes deltas
         refreshProcesses();   // Uses delta_total from refreshSystemCpu()
         refreshSystemMem();
     }
 
     if (do_gpu) {
-        last_gpu_refresh_ = now;
         refreshGpu();
     }
 }
@@ -197,6 +236,15 @@ void SystemMonitor::refreshProcesses() {
 
     cached_procs_ = std::move(new_procs);
     prev_proc_ticks_ = std::move(new_ticks);
+
+    // Build ppid→children index for O(1) lookups in buildTree()
+    children_index_.clear();
+    children_index_.reserve(cached_procs_.size());
+    for (const auto& [child_pid, child_stats] : cached_procs_) {
+        if (child_pid != child_stats.ppid) {
+            children_index_[child_stats.ppid].push_back(child_pid);
+        }
+    }
 }
 
 void SystemMonitor::refreshSystemCpu() {
@@ -255,8 +303,54 @@ void SystemMonitor::refreshSystemMem() {
 }
 
 void SystemMonitor::refreshGpu() {
-    // System GPU stats
-    FILE* fp = popen("nvidia-smi --query-gpu=memory.used,utilization.gpu,temperature.gpu "
+#ifdef RTL_HAS_NVML
+    if (nvml_initialized_) {
+        auto device = reinterpret_cast<nvmlDevice_t>(nvml_device_);
+
+        // System GPU stats via NVML (no fork/exec overhead)
+        nvmlMemory_t mem;
+        if (nvmlDeviceGetMemoryInfo(device, &mem) == NVML_SUCCESS) {
+            std::lock_guard lock(mutex_);
+            cached_system_.gpu_mem_used_mb = mem.used / (1024 * 1024);
+        }
+
+        nvmlUtilization_t util;
+        if (nvmlDeviceGetUtilizationRates(device, &util) == NVML_SUCCESS) {
+            std::lock_guard lock(mutex_);
+            cached_system_.gpu_utilization = static_cast<double>(util.gpu);
+        }
+
+        unsigned int temp = 0;
+        if (nvmlDeviceGetTemperature(device, NVML_TEMPERATURE_GPU, &temp) == NVML_SUCCESS) {
+            std::lock_guard lock(mutex_);
+            cached_system_.gpu_temp_c = static_cast<double>(temp);
+        }
+
+        // Per-process GPU memory via NVML
+        unsigned int info_count = 0;
+        // First call to get count
+        nvmlDeviceGetComputeRunningProcesses(device, &info_count, nullptr);
+        if (info_count > 0) {
+            std::vector<nvmlProcessInfo_t> procs(info_count);
+            if (nvmlDeviceGetComputeRunningProcesses(device, &info_count, procs.data()) == NVML_SUCCESS) {
+                std::unordered_map<pid_t, unsigned long> new_gpu;
+                for (unsigned int i = 0; i < info_count; ++i) {
+                    new_gpu[static_cast<pid_t>(procs[i].pid)] =
+                        procs[i].usedGpuMemory / (1024 * 1024);
+                }
+                std::lock_guard lock(mutex_);
+                gpu_proc_mem_ = std::move(new_gpu);
+            }
+        } else {
+            std::lock_guard lock(mutex_);
+            gpu_proc_mem_.clear();
+        }
+        return;
+    }
+#endif
+
+    // Fallback: nvidia-smi via popen (with timeout to avoid hanging)
+    FILE* fp = popen("timeout 2 nvidia-smi --query-gpu=memory.used,utilization.gpu,temperature.gpu "
                      "--format=csv,noheader,nounits 2>/dev/null", "r");
     if (fp) {
         char buf[256];
@@ -274,7 +368,7 @@ void SystemMonitor::refreshGpu() {
     }
 
     // Per-process GPU memory
-    fp = popen("nvidia-smi --query-compute-apps=pid,used_gpu_memory "
+    fp = popen("timeout 2 nvidia-smi --query-compute-apps=pid,used_gpu_memory "
                "--format=csv,noheader,nounits 2>/dev/null", "r");
     if (fp) {
         std::unordered_map<pid_t, unsigned long> new_gpu;
@@ -324,9 +418,10 @@ ProcessTreeNode SystemMonitor::buildTree(pid_t pid) const {
     node.total_mem_rss_kb = node.stats.mem_rss_kb;
     node.total_gpu_mem_mb = node.stats.gpu_mem_mb;
 
-    // Find children
-    for (const auto& [child_pid, child_stats] : cached_procs_) {
-        if (child_stats.ppid == pid && child_pid != pid) {
+    // Use pre-built children index for O(1) lookup instead of O(n) scan
+    auto children_it = children_index_.find(pid);
+    if (children_it != children_index_.end()) {
+        for (pid_t child_pid : children_it->second) {
             auto child_node = buildTree(child_pid);
             node.total_cpu_percent += child_node.total_cpu_percent;
             node.total_mem_rss_kb += child_node.total_mem_rss_kb;

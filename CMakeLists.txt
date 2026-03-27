@@ -66,6 +66,17 @@ endif()
 find_package(PkgConfig REQUIRED)
 pkg_check_modules(LIBPROC2 REQUIRED libproc2)
 
+# NVML (NVIDIA Management Library) — optional, for GPU monitoring without popen
+find_library(NVML_LIBRARY nvidia-ml PATHS /usr/lib/x86_64-linux-gnu /usr/lib64)
+find_path(NVML_INCLUDE_DIR nvml.h PATHS /usr/include /usr/local/cuda/include)
+if(NVML_LIBRARY AND NVML_INCLUDE_DIR)
+  message(STATUS "Found NVML: ${NVML_LIBRARY}")
+  set(HAVE_NVML TRUE)
+else()
+  message(STATUS "NVML not found — GPU monitoring will use nvidia-smi fallback")
+  set(HAVE_NVML FALSE)
+endif()
+
 # ── Core library (rclcpp-based) ─────────────────────────────────────────────
 add_library(ros2_tui_launcher_core STATIC
   src/launch_profile.cpp
@@ -89,6 +100,11 @@ target_link_libraries(ros2_tui_launcher_core PUBLIC
   SPSCQueue
   ${LIBPROC2_LIBRARIES}
 )
+if(HAVE_NVML)
+  target_include_directories(ros2_tui_launcher_core PRIVATE ${NVML_INCLUDE_DIR})
+  target_link_libraries(ros2_tui_launcher_core PRIVATE ${NVML_LIBRARY})
+  target_compile_definitions(ros2_tui_launcher_core PRIVATE RTL_HAS_NVML=1)
+endif()
 target_compile_options(ros2_tui_launcher_core PRIVATE -Wall -Wextra -Wpedantic)
 ament_target_dependencies(ros2_tui_launcher_core PUBLIC
   rclcpp

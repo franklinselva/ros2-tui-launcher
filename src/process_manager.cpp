@@ -39,6 +39,24 @@ ProcessManager::ProcessManager() = default;
 
 ProcessManager::~ProcessManager() {
     stopAll();
+    waitForRestartFutures();
+}
+
+void ProcessManager::cleanupRestartFutures() {
+    restart_futures_.erase(
+        std::remove_if(restart_futures_.begin(), restart_futures_.end(),
+            [](const std::future<void>& f) {
+                return f.wait_for(std::chrono::seconds(0)) == std::future_status::ready;
+            }),
+        restart_futures_.end());
+}
+
+void ProcessManager::waitForRestartFutures() {
+    std::lock_guard lock(restart_mutex_);
+    for (auto& f : restart_futures_) {
+        if (f.valid()) f.wait();
+    }
+    restart_futures_.clear();
 }
 
 void ProcessManager::setLogCallback(LogCallback cb) {
@@ -286,7 +304,7 @@ void ProcessManager::readerThread(std::shared_ptr<ManagedProcess> proc) {
     auto readFd = [&](int fd) {
         std::array<char, 4096> buf;
         std::string line_buffer;
-        size_t search_start = 0;
+        size_t consumed = 0;  // offset into line_buffer of unprocessed data
 
         while (proc->active.load()) {
             ssize_t n = read(fd, buf.data(), buf.size());
@@ -294,27 +312,31 @@ void ProcessManager::readerThread(std::shared_ptr<ManagedProcess> proc) {
 
             line_buffer.append(buf.data(), static_cast<size_t>(n));
 
-            // Process complete lines efficiently — track search position
+            // Process complete lines using offset tracking (avoids O(n) erase)
             size_t pos;
-            while ((pos = line_buffer.find('\n', search_start)) != std::string::npos) {
-                std::string line = line_buffer.substr(0, pos);
+            while ((pos = line_buffer.find('\n', consumed)) != std::string::npos) {
+                std::string line = line_buffer.substr(consumed, pos - consumed);
+                consumed = pos + 1;
 
                 std::lock_guard lock(mutex_);
                 if (log_callback_) {
                     log_callback_(proc->info.name, line);
                 }
-
-                line_buffer.erase(0, pos + 1);
-                search_start = 0;
             }
-            search_start = line_buffer.size();
+
+            // Compact buffer only when consumed portion exceeds 8KB
+            if (consumed > 8192) {
+                line_buffer.erase(0, consumed);
+                consumed = 0;
+            }
         }
 
         // Flush remaining
-        if (!line_buffer.empty()) {
+        if (consumed < line_buffer.size()) {
+            std::string remaining = line_buffer.substr(consumed);
             std::lock_guard lock(mutex_);
             if (log_callback_) {
-                log_callback_(proc->info.name, line_buffer);
+                log_callback_(proc->info.name, remaining);
             }
         }
 
@@ -354,21 +376,27 @@ void ProcessManager::waitThread(std::shared_ptr<ManagedProcess> proc) {
 
     // Handle restart policy — but NOT if we're being explicitly stopped/shut down
     if (!proc->shutting_down.load()) {
+        bool should_restart = false;
         if (proc->info.state.load() == ProcessState::Crashed) {
             if (proc->entry.restart_policy == "always" ||
                 proc->entry.restart_policy == "on-failure") {
                 spdlog::info("Restarting '{}' per restart_policy='{}'",
                              proc->info.name, proc->entry.restart_policy);
-                std::thread([this, entry = proc->entry]() {
-                    start(entry);
-                }).detach();
+                should_restart = true;
             }
         } else if (proc->entry.restart_policy == "always") {
             spdlog::info("Restarting '{}' per restart_policy='always'",
                          proc->info.name);
-            std::thread([this, entry = proc->entry]() {
-                start(entry);
-            }).detach();
+            should_restart = true;
+        }
+
+        if (should_restart) {
+            std::lock_guard lock(restart_mutex_);
+            cleanupRestartFutures();
+            restart_futures_.push_back(std::async(std::launch::async,
+                [this, entry = proc->entry]() {
+                    start(entry);
+                }));
         }
     }
 }

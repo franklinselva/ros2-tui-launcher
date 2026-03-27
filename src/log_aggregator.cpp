@@ -1,10 +1,9 @@
 #include "ros2_tui_launcher/log_aggregator.hpp"
 
 #include <algorithm>
+#include <cstdio>
 #include <ctime>
-#include <iomanip>
 #include <set>
-#include <sstream>
 
 namespace rtl {
 
@@ -37,10 +36,11 @@ std::string formatTimestamp(const std::chrono::system_clock::time_point& tp) {
     std::tm tm_buf{};
     localtime_r(&time_t_val, &tm_buf);
 
-    std::ostringstream ss;
-    ss << std::put_time(&tm_buf, "%H:%M:%S")
-       << '.' << std::setfill('0') << std::setw(3) << ms.count();
-    return ss.str();
+    char buf[16];  // "HH:MM:SS.mmm\0" = 13 chars
+    std::snprintf(buf, sizeof(buf), "%02d:%02d:%02d.%03d",
+                  tm_buf.tm_hour, tm_buf.tm_min, tm_buf.tm_sec,
+                  static_cast<int>(ms.count()));
+    return buf;
 }
 
 LogAggregator::LogAggregator(rclcpp::Node::SharedPtr node, size_t max_lines)
@@ -71,6 +71,7 @@ void LogAggregator::rosoutCallback(const rcl_interfaces::msg::Log::SharedPtr msg
     while (entries_.size() > max_lines_) {
         entries_.pop_front();
     }
+    ++generation_;
 }
 
 /// Parse and strip ROS 2 console log format from raw stdout lines.
@@ -151,6 +152,7 @@ void LogAggregator::pushRaw(const std::string& source, const std::string& messag
     while (entries_.size() > max_lines_) {
         entries_.pop_front();
     }
+    ++generation_;
 }
 
 std::vector<LogEntry> LogAggregator::filtered(
@@ -187,10 +189,16 @@ size_t LogAggregator::size() const {
     return entries_.size();
 }
 
+uint64_t LogAggregator::generation() const {
+    std::lock_guard lock(mutex_);
+    return generation_;
+}
+
 void LogAggregator::clear() {
     std::lock_guard lock(mutex_);
     entries_.clear();
     known_sources_.clear();
+    ++generation_;
 }
 
 }  // namespace rtl

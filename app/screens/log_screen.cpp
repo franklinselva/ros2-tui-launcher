@@ -145,30 +145,44 @@ void LogScreen::tick() {
     std::string source_filter;
     LogLevel min_level = LogLevel::Debug;
     std::string search;
+    int level_idx;
+    std::string node_val;
 
     {
         std::lock_guard lock(mutex_);
-
-        // Source filter from dropdown
         source_filter = source_filter_.selectedValue();
-
-        // Level filter from dropdown
-        int level_idx = level_filter_.selected();
+        level_idx = level_filter_.selected();
         if (level_idx > 0 && level_idx <= (int)kLevels.size()) {
             min_level = kLevels[level_idx - 1];
         }
-
         search = search_bar_.query();
-
-        // Node filter overrides source filter
-        std::string node_val = node_filter_.selectedValue();
+        node_val = node_filter_.selectedValue();
         if (!node_val.empty()) {
             source_filter = node_val;
         }
     }
 
-    auto entries = log_agg_->filtered(source_filter, min_level, search);
-    auto sources = log_agg_->sources();
+    // Skip re-filtering if log data and filter state are unchanged
+    auto cur_gen = log_agg_->generation();
+    bool filters_changed = (source_filter != last_source_filter_ ||
+                            search != last_search_ ||
+                            level_idx != last_level_idx_ ||
+                            node_val != last_node_filter_);
+    bool needs_refilter = (cur_gen != last_log_gen_ || filters_changed);
+
+    if (needs_refilter) {
+        auto entries = log_agg_->filtered(source_filter, min_level, search);
+        auto sources = log_agg_->sources();
+
+        std::lock_guard lock(mutex_);
+        cached_entries_ = std::move(entries);
+        source_filter_.setOptions(sources);
+        last_log_gen_ = cur_gen;
+        last_source_filter_ = source_filter;
+        last_search_ = search;
+        last_level_idx_ = level_idx;
+        last_node_filter_ = node_val;
+    }
 
     // Ensure node data is fresh (refresh is internally throttled to 2s)
     node_inspector_->refresh();
@@ -176,7 +190,6 @@ void LogScreen::tick() {
     std::vector<std::string> node_names;
     node_names.reserve(nodes.size());
     for (const auto& n : nodes) {
-        // Log sources use node name without leading "/" (from /rosout msg.name)
         std::string display = n.full_name;
         if (!display.empty() && display[0] == '/') {
             display = display.substr(1);
@@ -186,8 +199,6 @@ void LogScreen::tick() {
     std::sort(node_names.begin(), node_names.end());
 
     std::lock_guard lock(mutex_);
-    cached_entries_ = std::move(entries);
-    source_filter_.setOptions(sources);
     node_filter_.setOptions(node_names);
 }
 

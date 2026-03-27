@@ -35,6 +35,11 @@ private:
 
     std::mutex mutex_;
     std::vector<LogEntry> cached_entries_;
+    uint64_t last_log_gen_ = 0;
+    std::string last_source_filter_;
+    std::string last_search_;
+    int last_level_idx_ = 0;
+    std::string last_node_filter_;
 
     ScrollableList scroll_list_{ScrollableList::Config{false, 3, true}};
     SearchBar search_bar_;

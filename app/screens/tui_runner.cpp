@@ -31,8 +31,9 @@ void TuiRunner::setStatus(const std::string& status) {
 
 void TuiRunner::requestStop() {
     running_.store(false);
-    if (active_screen_) {
-        active_screen_->Exit();
+    auto* screen = active_screen_.load();
+    if (screen) {
+        screen->Exit();
     }
 }
 
@@ -167,7 +168,7 @@ void TuiRunner::run() {
     });
 
     auto screen = ScreenInteractive::Fullscreen();
-    active_screen_ = &screen;
+    active_screen_.store(&screen);
 
     // Background tick thread (~30 Hz) — only ticks the active screen
     std::thread tick_thread([&] {
@@ -184,7 +185,7 @@ void TuiRunner::run() {
     screen.Loop(with_global_keys);
 
     running_.store(false);
-    active_screen_ = nullptr;
+    active_screen_.store(nullptr);
     tick_thread.join();
 }
 

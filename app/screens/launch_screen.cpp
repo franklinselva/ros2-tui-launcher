@@ -5,8 +5,8 @@
 #include <ftxui/component/event.hpp>
 
 #include <algorithm>
+#include <functional>
 #include <sstream>
-#include <thread>
 
 using namespace ftxui;
 
@@ -22,14 +22,37 @@ LaunchScreen::LaunchScreen(
     , proc_mgr_(proc_mgr)
     , sys_mon_(sys_mon) {}
 
+LaunchScreen::~LaunchScreen() {
+    // Wait for all background operations to complete
+    std::lock_guard lock(bg_mutex_);
+    for (auto& f : bg_futures_) {
+        if (f.valid()) f.wait();
+    }
+}
+
+void LaunchScreen::launchAsync(std::function<void()> fn) {
+    std::lock_guard lock(bg_mutex_);
+    cleanupFinishedFutures();
+    bg_futures_.push_back(std::async(std::launch::async, std::move(fn)));
+}
+
+void LaunchScreen::cleanupFinishedFutures() {
+    bg_futures_.erase(
+        std::remove_if(bg_futures_.begin(), bg_futures_.end(),
+            [](const std::future<void>& f) {
+                return f.wait_for(std::chrono::seconds(0)) == std::future_status::ready;
+            }),
+        bg_futures_.end());
+}
+
 void LaunchScreen::startSelected() {
     if (profiles_->empty()) return;
     const auto& profile = (*profiles_)[*active_profile_idx_];
     int sel = scroll_list_.selected();
     if (sel < 0 || sel >= (int)profile.entries.size()) return;
-    std::thread([this, entry = profile.entries[sel]]() {
+    launchAsync([this, entry = profile.entries[sel]]() {
         proc_mgr_->start(entry);
-    }).detach();
+    });
 }
 
 void LaunchScreen::stopSelected() {
@@ -37,9 +60,9 @@ void LaunchScreen::stopSelected() {
     const auto& profile = (*profiles_)[*active_profile_idx_];
     int sel = scroll_list_.selected();
     if (sel < 0 || sel >= (int)profile.entries.size()) return;
-    std::thread([this, name = profile.entries[sel].displayName()]() {
+    launchAsync([this, name = profile.entries[sel].displayName()]() {
         proc_mgr_->stop(name);
-    }).detach();
+    });
 }
 
 void LaunchScreen::restartSelected() {
@@ -47,25 +70,25 @@ void LaunchScreen::restartSelected() {
     const auto& profile = (*profiles_)[*active_profile_idx_];
     int sel = scroll_list_.selected();
     if (sel < 0 || sel >= (int)profile.entries.size()) return;
-    std::thread([this, name = profile.entries[sel].displayName()]() {
+    launchAsync([this, name = profile.entries[sel].displayName()]() {
         proc_mgr_->restart(name);
-    }).detach();
+    });
 }
 
 void LaunchScreen::startAll() {
     if (profiles_->empty()) return;
     const auto& profile = (*profiles_)[*active_profile_idx_];
-    std::thread([this, entries = profile.entries]() {
+    launchAsync([this, entries = profile.entries]() {
         for (const auto& entry : entries) {
             proc_mgr_->start(entry);
         }
-    }).detach();
+    });
 }
 
 void LaunchScreen::stopAll() {
-    std::thread([this]() {
+    launchAsync([this]() {
         proc_mgr_->stopAll();
-    }).detach();
+    });
 }
 
 void LaunchScreen::nextProfile() {
@@ -237,14 +260,12 @@ ftxui::Component LaunchScreen::component() {
         for (const auto& entry : profile.entries) {
             std::string proc_name = entry.displayName();
 
-            // Find matching process info
+            // Find matching process info via O(1) lookup
             ProcessInfo pinfo;
             pinfo.name = proc_name;
-            for (const auto& p : cached_procs_) {
-                if (p.name == proc_name) {
-                    pinfo = p;
-                    break;
-                }
+            auto proc_it = cached_procs_.find(proc_name);
+            if (proc_it != cached_procs_.end()) {
+                pinfo = proc_it->second;
             }
 
             auto state = pinfo.state.load();
@@ -432,18 +453,23 @@ void LaunchScreen::tick() {
     sys_mon_->refresh();
 
     auto sys_info = sys_mon_->systemInfo();
-    auto procs = proc_mgr_->processes();
+    auto procs_vec = proc_mgr_->processes();
+
+    // Build name→info map for O(1) lookup in render
+    std::unordered_map<std::string, ProcessInfo> procs_map;
+    procs_map.reserve(procs_vec.size());
 
     // Build trees for running processes
     std::unordered_map<std::string, ProcessTreeNode> trees;
-    for (const auto& p : procs) {
+    for (const auto& p : procs_vec) {
         if (p.state.load() == ProcessState::Running && p.pid > 0) {
             trees[p.name] = sys_mon_->processTree(p.pid);
         }
+        procs_map.emplace(p.name, p);
     }
 
     std::lock_guard lock(mutex_);
-    cached_procs_ = std::move(procs);
+    cached_procs_ = std::move(procs_map);
     cached_sys_ = std::move(sys_info);
     cached_trees_ = std::move(trees);
 }
