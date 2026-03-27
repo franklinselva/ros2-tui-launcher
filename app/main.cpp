@@ -61,9 +61,13 @@ int main(int argc, char* argv[]) {
         }
     }
 
-    // Initialize ROS 2 with only ROS-relevant args
+    // Initialize ROS 2 with only ROS-relevant args.
+    // Disable rclcpp's built-in signal handlers — we manage SIGINT/SIGTERM
+    // ourselves so they don't conflict with FTXUI's terminal raw mode.
+    rclcpp::InitOptions init_options;
+    init_options.shutdown_on_signal = false;
     int ros_argc = static_cast<int>(ros_argv.size());
-    rclcpp::init(ros_argc, const_cast<char**>(ros_argv.data()));
+    rclcpp::init(ros_argc, const_cast<char**>(ros_argv.data()), init_options);
     auto node = rclcpp::Node::make_shared("ros2_tui_launcher");
 
     // Load profiles

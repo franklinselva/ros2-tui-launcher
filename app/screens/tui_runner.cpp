@@ -48,26 +48,33 @@ void TuiRunner::run() {
 
     int selected_tab = 0;
 
-    auto tab_toggle = Toggle(&tab_names, &selected_tab);
-
-    // Screen components already have CatchEvent wired in — they handle their own keys
+    // Build screen components — kept in a vector for direct event forwarding
     std::vector<Component> screen_components;
     for (auto& s : screens_)
         screen_components.push_back(s->component());
-    auto tab_content = Container::Tab(std::move(screen_components), &selected_tab);
 
-    // Layout: tab bar on top, content below.
-    auto main_component = Container::Vertical({
-        tab_toggle,
-        tab_content,
-    });
-
-    // Render the chrome (header, border, hotkey bar) around the component tree
-    auto main_renderer = Renderer(main_component, [&] {
+    // Pure visual renderer — no event-owning child.  We bypass Container::Tab
+    // and Toggle entirely because FTXUI's ContainerBase::OnEvent() silently
+    // drops all events when !Focused(), and leaf Renderer components are not
+    // focusable.  Instead, we render the active screen directly and forward
+    // events explicitly in the CatchEvent below.
+    auto main_renderer = Renderer([&] {
         std::string status;
         {
             std::lock_guard lock(status_mutex_);
             status = status_text_;
+        }
+
+        // Build tab bar
+        Elements tab_entries;
+        for (int i = 0; i < (int)tab_names.size(); ++i) {
+            auto entry = text(" " + tab_names[i] + " ");
+            if (i == selected_tab) {
+                entry = entry | bold | inverted;
+            } else {
+                entry = entry | dim;
+            }
+            tab_entries.push_back(entry);
         }
 
         return vbox({
@@ -76,18 +83,18 @@ void TuiRunner::run() {
                 filler(),
                 text(" " + status + " ") | color(Color::Green),
             }),
-            tab_toggle->Render() | borderLight,
-            tab_content->Render() | flex,
+            hbox(std::move(tab_entries)) | borderLight,
+            screen_components[selected_tab]->Render() | flex,
             hbox({
                 text(" " + buildHotkeyHint() + " [Q]uit ") | dim,
             }),
         }) | border;
     });
 
-    // Global key handler — wraps the outside.
-    // FTXUI's CatchEvent on the outside intercepts FIRST.
-    // We only handle quit and tab-switch keys here. All other events
-    // fall through to FTXUI's normal component tree propagation (returning false).
+    // Single CatchEvent handles everything:
+    //   1. Global keys (quit, tab switching)
+    //   2. Forward remaining events directly to the active screen component
+    // This avoids FTXUI's focus system entirely — no events are lost.
     auto with_global_keys = CatchEvent(main_renderer, [&](Event event) -> bool {
         // Quit (q or Q)
         if (event.is_character() &&
@@ -123,7 +130,22 @@ void TuiRunner::run() {
             }
         }
 
-        // Let FTXUI propagate to inner components (screen-level CatchEvent handlers)
+        // Tab / Shift+Tab to cycle through tabs
+        int tab_count = (int)screens_.size();
+        if (event == Event::Tab) {
+            selected_tab = (selected_tab + 1) % tab_count;
+            return true;
+        }
+        if (event == Event::TabReverse) {
+            selected_tab = (selected_tab - 1 + tab_count) % tab_count;
+            return true;
+        }
+
+        // Forward all other events directly to the active screen's component
+        if (selected_tab >= 0 && selected_tab < (int)screen_components.size()) {
+            return screen_components[selected_tab]->OnEvent(event);
+        }
+
         return false;
     });
 

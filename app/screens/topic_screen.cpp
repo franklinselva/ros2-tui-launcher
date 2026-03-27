@@ -3,6 +3,7 @@
 #include <ftxui/dom/elements.hpp>
 #include <ftxui/component/component.hpp>
 #include <ftxui/component/event.hpp>
+#include <ftxui/component/mouse.hpp>
 #include <ftxui/screen/terminal.hpp>
 
 #include <algorithm>
@@ -20,11 +21,15 @@ ftxui::Component TopicScreen::component() {
     auto renderer = Renderer([this] {
         std::lock_guard lock(mutex_);
 
-        // Mode indicator
+        // Mode indicator + search
         auto mode_bar = hbox({
             text(" View: ") | bold,
             text(show_all_ ? "[All Topics]" : "[Watched Only]")
                 | color(show_all_ ? Color::Cyan : Color::Yellow),
+            text("  Search: ") | bold,
+            text(search_mode_ ? search_text_ + "_" : (search_text_.empty() ? "(none)" : search_text_))
+                | (search_mode_ ? color(Color::White) : dim),
+            search_mode_ ? (text(" [ESC] cancel ") | color(Color::Yellow)) : text(""),
             filler(),
             text(" " + std::to_string(cached_topics_.size()) + " total topics ") | dim,
         });
@@ -47,6 +52,17 @@ ftxui::Component TopicScreen::component() {
                 std::remove_if(topics.begin(), topics.end(),
                     [](const TopicInfo& t) {
                         return t.expected_hz <= 0 && t.hz <= 0;
+                    }),
+                topics.end());
+        }
+        // Search filter
+        if (!search_text_.empty()) {
+            std::string query = search_text_;
+            topics.erase(
+                std::remove_if(topics.begin(), topics.end(),
+                    [&query](const TopicInfo& t) {
+                        return t.name.find(query) == std::string::npos &&
+                               t.type.find(query) == std::string::npos;
                     }),
                 topics.end());
         }
@@ -134,12 +150,38 @@ ftxui::Component TopicScreen::component() {
             vbox(std::move(rows)) | flex,
             separator(),
             hbox({
-                text(" [a] All topics  [w] Watched only  [Up/Down] Select  [PgUp/PgDn] Scroll" + scroll_info) | dim,
+                text(" [a] All  [w] Watched  [/] Search  [Up/Down] Select  [PgUp/PgDn] Scroll" + scroll_info) | dim,
             }),
         });
     });
 
     return CatchEvent(renderer, [this](Event event) {
+        // Search mode: capture typed characters
+        if (search_mode_) {
+            if (event == Event::Escape || event == Event::Return) {
+                search_mode_ = false;
+                return true;
+            }
+            if (event == Event::Backspace) {
+                std::lock_guard lock(mutex_);
+                if (!search_text_.empty()) search_text_.pop_back();
+                return true;
+            }
+            if (event.is_character()) {
+                std::lock_guard lock(mutex_);
+                search_text_ += event.character();
+                return true;
+            }
+            // Let non-character events (arrows, mouse) fall through
+        }
+
+        // Normal mode
+        if (event.is_character() && event.character() == "/") {
+            std::lock_guard lock(mutex_);
+            search_mode_ = true;
+            search_text_.clear();
+            return true;
+        }
         if (event.is_character() && event.character() == "a") {
             std::lock_guard lock(mutex_);
             show_all_ = true;
@@ -188,6 +230,33 @@ ftxui::Component TopicScreen::component() {
             selected_ = scroll_offset_;
             return true;
         }
+
+        // Mouse wheel scroll
+        if (event.is_mouse()) {
+            auto& mouse = event.mouse();
+            if (mouse.button == Mouse::WheelDown) {
+                std::lock_guard lock(mutex_);
+                int count = (int)cached_topics_.size();
+                auto term_size = Terminal::Size();
+                int max_visible = std::max(3, term_size.dimy - 12);
+                if (selected_ < count - 1) {
+                    selected_ = std::min(selected_ + 3, count - 1);
+                    if (selected_ >= scroll_offset_ + max_visible) {
+                        scroll_offset_ = selected_ - max_visible + 1;
+                    }
+                }
+                return true;
+            }
+            if (mouse.button == Mouse::WheelUp) {
+                std::lock_guard lock(mutex_);
+                if (selected_ > 0) {
+                    selected_ = std::max(0, selected_ - 3);
+                    if (selected_ < scroll_offset_) scroll_offset_ = selected_;
+                }
+                return true;
+            }
+        }
+
         return false;
     });
 }

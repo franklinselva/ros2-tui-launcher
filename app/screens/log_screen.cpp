@@ -3,6 +3,7 @@
 #include <ftxui/dom/elements.hpp>
 #include <ftxui/component/component.hpp>
 #include <ftxui/component/event.hpp>
+#include <ftxui/component/mouse.hpp>
 #include <ftxui/screen/terminal.hpp>
 
 #include <algorithm>
@@ -197,6 +198,25 @@ ftxui::Component LogScreen::component() {
             auto_scroll_ = true;
             return true;
         }
+
+        // Mouse wheel scroll
+        if (event.is_mouse()) {
+            auto& mouse = event.mouse();
+            if (mouse.button == Mouse::WheelDown) {
+                std::lock_guard lock(mutex_);
+                auto_scroll_ = false;
+                int max_offset = std::max(0, (int)cached_entries_.size() - viewport_height_);
+                scroll_offset_ = std::min(scroll_offset_ + 3, max_offset);
+                return true;
+            }
+            if (mouse.button == Mouse::WheelUp) {
+                std::lock_guard lock(mutex_);
+                auto_scroll_ = false;
+                scroll_offset_ = std::max(0, scroll_offset_ - 3);
+                return true;
+            }
+        }
+
         return false;
     });
 }

@@ -26,6 +26,8 @@ private:
     bool show_all_ = false;  // false = only watched topics, true = all
     int selected_ = 0;
     int scroll_offset_ = 0;
+    bool search_mode_ = false;
+    std::string search_text_;
 };
 
 }  // namespace rtl::tui
