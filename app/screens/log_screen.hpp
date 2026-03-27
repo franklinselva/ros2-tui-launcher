@@ -1,7 +1,11 @@
 #pragma once
 
 #include "screen.hpp"
+#include "components/scrollable_list.hpp"
+#include "components/search_bar.hpp"
+#include "components/filter_dropdown.hpp"
 #include "ros2_tui_launcher/log_aggregator.hpp"
+#include "ros2_tui_launcher/node_inspector.hpp"
 
 #include <mutex>
 #include <string>
@@ -12,27 +16,31 @@ namespace rtl::tui {
 /// Screen for viewing and filtering aggregated logs.
 class LogScreen : public Screen {
 public:
-    explicit LogScreen(LogAggregator* log_agg);
+    LogScreen(LogAggregator* log_agg, NodeInspector* node_inspector);
 
     std::string name() const override { return "Logs"; }
     std::string hotkey() const override { return "G"; }
     ftxui::Component component() override;
     void tick() override;
+    bool inputActive() const override {
+        return search_bar_.inputActive()
+            || source_filter_.inputActive()
+            || level_filter_.inputActive()
+            || node_filter_.inputActive();
+    }
 
 private:
     LogAggregator* log_agg_;
+    NodeInspector* node_inspector_;
 
     std::mutex mutex_;
     std::vector<LogEntry> cached_entries_;
-    std::vector<std::string> cached_sources_;
 
-    int selected_source_ = 0;       // 0 = all
-    int selected_level_ = 0;        // 0 = Debug, 1 = Info, etc.
-    std::string search_text_;
-    int scroll_offset_ = 0;
-    bool auto_scroll_ = true;
-    bool search_mode_ = false;
-    int viewport_height_ = 40;      // updated dynamically from terminal size
+    ScrollableList scroll_list_{ScrollableList::Config{false, 3, true}};
+    SearchBar search_bar_;
+    FilterDropdown source_filter_{"f", "Source", ftxui::Color::Cyan};
+    FilterDropdown level_filter_{"v", "Level", ftxui::Color::Yellow};
+    FilterDropdown node_filter_{"n", "Node", ftxui::Color::Magenta};
 };
 
 }  // namespace rtl::tui

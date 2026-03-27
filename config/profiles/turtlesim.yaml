@@ -8,6 +8,10 @@ launch:
     executable: turtlesim_node
     autostart: true
     restart_policy: on-failure
+    parameters:
+      background_r: "69"
+      background_g: "86"
+      background_b: "255"
 
   # Note: teleop_turtle_key requires terminal input,
   # so autostart is off — start manually if needed

@@ -45,6 +45,14 @@ LaunchProfile loadProfile(const std::filesystem::path& path) {
                 }
             }
 
+            entry.params_file = entry_node["params_file"].as<std::string>("");
+
+            if (auto params_node = entry_node["parameters"]) {
+                for (auto it = params_node.begin(); it != params_node.end(); ++it) {
+                    entry.parameters[it->first.as<std::string>()] = it->second.as<std::string>();
+                }
+            }
+
             if (entry.package.empty()) {
                 spdlog::warn("Launch entry missing 'package' in {}", path.string());
                 continue;

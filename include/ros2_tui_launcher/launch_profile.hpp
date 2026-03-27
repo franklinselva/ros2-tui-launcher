@@ -26,6 +26,12 @@ struct LaunchEntry {
     /// Restart policy: "never", "on-failure", "always"
     std::string restart_policy = "never";
 
+    /// Path to a ROS 2 parameter YAML file (passed via --params-file)
+    std::string params_file;
+
+    /// Inline ROS 2 node parameters (passed via -p key:=value)
+    std::unordered_map<std::string, std::string> parameters;
+
     /// Display name, derived from package/launch_file if not set
     std::string displayName() const;
 };

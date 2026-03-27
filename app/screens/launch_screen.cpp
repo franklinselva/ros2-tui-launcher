@@ -22,9 +22,9 @@ LaunchScreen::LaunchScreen(
 void LaunchScreen::startSelected() {
     if (profiles_->empty()) return;
     const auto& profile = (*profiles_)[*active_profile_idx_];
-    if (selected_entry_ < 0 || selected_entry_ >= (int)profile.entries.size()) return;
-    // Run in background thread to avoid blocking UI
-    std::thread([this, entry = profile.entries[selected_entry_]]() {
+    int sel = scroll_list_.selected();
+    if (sel < 0 || sel >= (int)profile.entries.size()) return;
+    std::thread([this, entry = profile.entries[sel]]() {
         proc_mgr_->start(entry);
     }).detach();
 }
@@ -32,9 +32,9 @@ void LaunchScreen::startSelected() {
 void LaunchScreen::stopSelected() {
     if (profiles_->empty()) return;
     const auto& profile = (*profiles_)[*active_profile_idx_];
-    if (selected_entry_ < 0 || selected_entry_ >= (int)profile.entries.size()) return;
-    // Run in background thread — stop() can block up to 5s
-    std::thread([this, name = profile.entries[selected_entry_].displayName()]() {
+    int sel = scroll_list_.selected();
+    if (sel < 0 || sel >= (int)profile.entries.size()) return;
+    std::thread([this, name = profile.entries[sel].displayName()]() {
         proc_mgr_->stop(name);
     }).detach();
 }
@@ -42,8 +42,9 @@ void LaunchScreen::stopSelected() {
 void LaunchScreen::restartSelected() {
     if (profiles_->empty()) return;
     const auto& profile = (*profiles_)[*active_profile_idx_];
-    if (selected_entry_ < 0 || selected_entry_ >= (int)profile.entries.size()) return;
-    std::thread([this, name = profile.entries[selected_entry_].displayName()]() {
+    int sel = scroll_list_.selected();
+    if (sel < 0 || sel >= (int)profile.entries.size()) return;
+    std::thread([this, name = profile.entries[sel].displayName()]() {
         proc_mgr_->restart(name);
     }).detach();
 }
@@ -67,7 +68,6 @@ void LaunchScreen::stopAll() {
 void LaunchScreen::nextProfile() {
     if (profiles_->size() <= 1) return;
     *active_profile_idx_ = (*active_profile_idx_ + 1) % (int)profiles_->size();
-    selected_entry_ = 0;
 }
 
 ftxui::Component LaunchScreen::component() {
@@ -82,6 +82,9 @@ ftxui::Component LaunchScreen::component() {
         }
 
         const auto& profile = (*profiles_)[*active_profile_idx_];
+
+        // Update scroll list item count
+        scroll_list_.setItemCount((int)profile.entries.size());
 
         Elements header_row;
         header_row.push_back(
@@ -123,6 +126,7 @@ ftxui::Component LaunchScreen::component() {
             }));
         table_rows.push_back(separator());
 
+        int selected = scroll_list_.selected();
         int entry_idx = 0;
         for (const auto& entry : profile.entries) {
             std::string proc_name = entry.displayName();
@@ -167,7 +171,7 @@ ftxui::Component LaunchScreen::component() {
             std::string pid_str = (pinfo.pid > 0) ? std::to_string(pinfo.pid) : "-";
 
             // Selection indicator
-            bool is_selected = (entry_idx == selected_entry_);
+            bool is_selected = (entry_idx == selected);
             std::string prefix = is_selected ? " > " : "   ";
 
             auto row = hbox({
@@ -201,30 +205,26 @@ ftxui::Component LaunchScreen::component() {
         return vbox(std::move(result));
     });
 
-    // Wrap with event handler
     return CatchEvent(renderer, [this](Event event) {
         if (profiles_->empty()) return false;
-        const auto& profile = (*profiles_)[*active_profile_idx_];
-        int entry_count = (int)profile.entries.size();
 
-        if (event == Event::ArrowUp || event == Event::Character("k")) {
-            std::lock_guard lock(mutex_);
-            if (selected_entry_ > 0) selected_entry_--;
-            return true;
-        }
-        if (event == Event::ArrowDown || event == Event::Character("j")) {
-            std::lock_guard lock(mutex_);
-            if (selected_entry_ < entry_count - 1) selected_entry_++;
-            return true;
-        }
+        std::lock_guard lock(mutex_);
+
+        // Scroll list handles navigation
+        if (scroll_list_.handleEvent(event)) return true;
+
+        // Screen-specific keys
         if (event == Event::Return) {
-            // Toggle: start if stopped, stop if running
-            std::string proc_name = profile.entries[selected_entry_].displayName();
-            auto info = proc_mgr_->processInfo(proc_name);
-            if (info.state.load() == ProcessState::Running || info.state.load() == ProcessState::Starting) {
-                stopSelected();
-            } else {
-                startSelected();
+            const auto& profile = (*profiles_)[*active_profile_idx_];
+            int sel = scroll_list_.selected();
+            if (sel >= 0 && sel < (int)profile.entries.size()) {
+                std::string proc_name = profile.entries[sel].displayName();
+                auto info = proc_mgr_->processInfo(proc_name);
+                if (info.state.load() == ProcessState::Running || info.state.load() == ProcessState::Starting) {
+                    stopSelected();
+                } else {
+                    startSelected();
+                }
             }
             return true;
         }
@@ -241,7 +241,6 @@ ftxui::Component LaunchScreen::component() {
             return true;
         }
         if (event.is_character() && event.character() == "p") {
-            std::lock_guard lock(mutex_);
             nextProfile();
             return true;
         }

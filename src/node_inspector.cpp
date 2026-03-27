@@ -55,6 +55,38 @@ void NodeInspector::doRefresh() {
         new_map[full_name] = std::move(dn);
     }
 
+    // Populate publishers and subscribers per node using graph introspection
+    try {
+        auto topic_names_and_types = node_->get_topic_names_and_types();
+        for (const auto& [topic_name, types] : topic_names_and_types) {
+            // Query publishers for this topic
+            auto pub_endpoints = node_->get_publishers_info_by_topic(topic_name);
+            for (const auto& ep : pub_endpoints) {
+                std::string ep_ns = ep.node_namespace();
+                std::string ep_name = ep.node_name();
+                std::string node_full = (ep_ns == "/" ? "/" : ep_ns + "/") + ep_name;
+                auto it = new_map.find(node_full);
+                if (it != new_map.end()) {
+                    it->second.publishers.push_back(topic_name);
+                }
+            }
+
+            // Query subscribers for this topic
+            auto sub_endpoints = node_->get_subscriptions_info_by_topic(topic_name);
+            for (const auto& ep : sub_endpoints) {
+                std::string ep_ns = ep.node_namespace();
+                std::string ep_name = ep.node_name();
+                std::string node_full = (ep_ns == "/" ? "/" : ep_ns + "/") + ep_name;
+                auto it = new_map.find(node_full);
+                if (it != new_map.end()) {
+                    it->second.subscribers.push_back(topic_name);
+                }
+            }
+        }
+    } catch (const std::exception& e) {
+        spdlog::debug("Failed to query topic endpoints: {}", e.what());
+    }
+
     // Brief lock to swap in the new data
     std::lock_guard lock(mutex_);
     nodes_map_ = std::move(new_map);

@@ -63,12 +63,31 @@ bool ProcessManager::start(const LaunchEntry& entry) {
         for (const auto& [k, v] : entry.args) {
             argv.push_back(k + ":=" + v);
         }
+        // For launch files, pass params_file and parameters as launch arguments
+        if (!entry.params_file.empty()) {
+            argv.push_back("params_file:=" + entry.params_file);
+        }
+        for (const auto& [k, v] : entry.parameters) {
+            argv.push_back(k + ":=" + v);
+        }
     } else {
         argv = {"ros2", "run", entry.package, entry.executable};
-        for (const auto& [k, v] : entry.args) {
+        // Collect all --ros-args in a single block
+        bool has_ros_args = !entry.args.empty() || !entry.parameters.empty() || !entry.params_file.empty();
+        if (has_ros_args) {
             argv.push_back("--ros-args");
-            argv.push_back("-p");
-            argv.push_back(k + ":=" + v);
+            if (!entry.params_file.empty()) {
+                argv.push_back("--params-file");
+                argv.push_back(entry.params_file);
+            }
+            for (const auto& [k, v] : entry.args) {
+                argv.push_back("-p");
+                argv.push_back(k + ":=" + v);
+            }
+            for (const auto& [k, v] : entry.parameters) {
+                argv.push_back("-p");
+                argv.push_back(k + ":=" + v);
+            }
         }
     }
 

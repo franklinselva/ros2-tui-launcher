@@ -1,6 +1,7 @@
 #pragma once
 
 #include "screen.hpp"
+#include "components/scrollable_list.hpp"
 #include "ros2_tui_launcher/launch_profile.hpp"
 #include "ros2_tui_launcher/process_manager.hpp"
 
@@ -34,9 +35,10 @@ private:
     int* active_profile_idx_;
     ProcessManager* proc_mgr_;
 
-    int selected_entry_ = 0;
     std::mutex mutex_;
     std::vector<ProcessInfo> cached_procs_;
+
+    ScrollableList scroll_list_;
 };
 
 }  // namespace rtl::tui

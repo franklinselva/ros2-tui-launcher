@@ -69,6 +69,7 @@ add_library(ros2_tui_launcher_core STATIC
   src/log_aggregator.cpp
   src/topic_monitor.cpp
   src/node_inspector.cpp
+  src/parameter_manager.cpp
 )
 target_include_directories(ros2_tui_launcher_core PUBLIC
   $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
@@ -94,6 +95,7 @@ add_library(ros2_tui_launcher_tui STATIC
   app/screens/log_screen.cpp
   app/screens/topic_screen.cpp
   app/screens/node_screen.cpp
+  app/screens/parameter_screen.cpp
 )
 target_include_directories(ros2_tui_launcher_tui PUBLIC
   $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/app>

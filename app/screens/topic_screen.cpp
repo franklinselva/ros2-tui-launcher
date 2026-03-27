@@ -3,7 +3,6 @@
 #include <ftxui/dom/elements.hpp>
 #include <ftxui/component/component.hpp>
 #include <ftxui/component/event.hpp>
-#include <ftxui/component/mouse.hpp>
 #include <ftxui/screen/terminal.hpp>
 
 #include <algorithm>
@@ -14,22 +13,24 @@ using namespace ftxui;
 
 namespace rtl::tui {
 
-TopicScreen::TopicScreen(TopicMonitor* topic_mon)
-    : topic_mon_(topic_mon) {}
+TopicScreen::TopicScreen(TopicMonitor* topic_mon, NodeInspector* node_inspector)
+    : topic_mon_(topic_mon), node_inspector_(node_inspector) {}
 
 ftxui::Component TopicScreen::component() {
     auto renderer = Renderer([this] {
         std::lock_guard lock(mutex_);
 
-        // Mode indicator + search
+        // Adapt viewport
+        auto term_size = Terminal::Size();
+        int viewport_h = std::max(3, term_size.dimy - 12);
+
+        // Mode indicator + node filter + search
         auto mode_bar = hbox({
             text(" View: ") | bold,
             text(show_all_ ? "[All Topics]" : "[Watched Only]")
                 | color(show_all_ ? Color::Cyan : Color::Yellow),
-            text("  Search: ") | bold,
-            text(search_mode_ ? search_text_ + "_" : (search_text_.empty() ? "(none)" : search_text_))
-                | (search_mode_ ? color(Color::White) : dim),
-            search_mode_ ? (text(" [ESC] cancel ") | color(Color::Yellow)) : text(""),
+            node_filter_.renderInline(),
+            search_bar_.render(),
             filler(),
             text(" " + std::to_string(cached_topics_.size()) + " total topics ") | dim,
         });
@@ -55,9 +56,10 @@ ftxui::Component TopicScreen::component() {
                     }),
                 topics.end());
         }
+
         // Search filter
-        if (!search_text_.empty()) {
-            std::string query = search_text_;
+        auto query = search_bar_.query();
+        if (!query.empty()) {
             topics.erase(
                 std::remove_if(topics.begin(), topics.end(),
                     [&query](const TopicInfo& t) {
@@ -67,12 +69,26 @@ ftxui::Component TopicScreen::component() {
                 topics.end());
         }
 
-        // Scrollable viewport
-        auto term_size = Terminal::Size();
-        int max_visible = std::max(3, term_size.dimy - 12);
-        int total = (int)topics.size();
-        int start = std::clamp(scroll_offset_, 0, std::max(0, total - max_visible));
-        int end = std::min(start + max_visible, total);
+        // Node filter
+        std::string node_val = node_filter_.selectedValue();
+        if (!node_val.empty()) {
+            auto it = cached_node_topics_.find(node_val);
+            if (it != cached_node_topics_.end()) {
+                const auto& node_topics = it->second;
+                topics.erase(
+                    std::remove_if(topics.begin(), topics.end(),
+                        [&node_topics](const TopicInfo& t) {
+                            return node_topics.find(t.name) == node_topics.end();
+                        }),
+                    topics.end());
+            }
+        }
+
+        // Update scroll list with filtered count
+        scroll_list_.setViewportHeight(viewport_h);
+        scroll_list_.setItemCount((int)topics.size());
+        auto [start, end] = scroll_list_.visibleRange();
+        int selected = scroll_list_.selected();
 
         Elements rows;
         for (int idx = start; idx < end; ++idx) {
@@ -108,7 +124,7 @@ ftxui::Component TopicScreen::component() {
                 type_display = type_display.substr(0, 25) + "...";
             }
 
-            bool is_selected = (idx == selected_);
+            bool is_selected = (idx == selected);
             std::string prefix = is_selected ? " > " : "   ";
 
             auto row = hbox({
@@ -136,13 +152,14 @@ ftxui::Component TopicScreen::component() {
         }
 
         // Scroll indicator
+        int total = (int)topics.size();
         std::string scroll_info;
-        if (total > max_visible) {
+        if (total > viewport_h) {
             scroll_info = " [" + std::to_string(start + 1) + "-" + std::to_string(end)
                         + "/" + std::to_string(total) + "]";
         }
 
-        return vbox({
+        auto content = vbox({
             mode_bar,
             separator(),
             header,
@@ -150,121 +167,69 @@ ftxui::Component TopicScreen::component() {
             vbox(std::move(rows)) | flex,
             separator(),
             hbox({
-                text(" [a] All  [w] Watched  [/] Search  [Up/Down] Select  [PgUp/PgDn] Scroll" + scroll_info) | dim,
+                text(" [a] All  [w] Watched  [f] Node  [/] Search  [Up/Down] Select  [PgUp/PgDn] Scroll" + scroll_info) | dim,
             }),
         });
+
+        // Overlay dropdown if open
+        auto dropdown = node_filter_.renderDropdown();
+        if (node_filter_.inputActive()) {
+            return dbox({content, dropdown | center});
+        }
+
+        return content;
     });
 
     return CatchEvent(renderer, [this](Event event) {
-        // Search mode: capture typed characters
-        if (search_mode_) {
-            if (event == Event::Escape || event == Event::Return) {
-                search_mode_ = false;
-                return true;
-            }
-            if (event == Event::Backspace) {
-                std::lock_guard lock(mutex_);
-                if (!search_text_.empty()) search_text_.pop_back();
-                return true;
-            }
-            if (event.is_character()) {
-                std::lock_guard lock(mutex_);
-                search_text_ += event.character();
-                return true;
-            }
-            // Let non-character events (arrows, mouse) fall through
-        }
+        std::lock_guard lock(mutex_);
 
-        // Normal mode
-        if (event.is_character() && event.character() == "/") {
-            std::lock_guard lock(mutex_);
-            search_mode_ = true;
-            search_text_.clear();
-            return true;
-        }
+        // Dropdown gets first crack
+        if (node_filter_.handleEvent(event)) return true;
+
+        // Search bar
+        if (search_bar_.handleEvent(event)) return true;
+
+        // Scroll list handles navigation
+        if (scroll_list_.handleEvent(event)) return true;
+
+        // Screen-specific keys
         if (event.is_character() && event.character() == "a") {
-            std::lock_guard lock(mutex_);
             show_all_ = true;
             return true;
         }
         if (event.is_character() && event.character() == "w") {
-            std::lock_guard lock(mutex_);
             show_all_ = false;
             return true;
         }
-        if (event == Event::ArrowUp || event == Event::Character("k")) {
-            std::lock_guard lock(mutex_);
-            if (selected_ > 0) {
-                selected_--;
-                if (selected_ < scroll_offset_) scroll_offset_ = selected_;
-            }
-            return true;
-        }
-        if (event == Event::ArrowDown || event == Event::Character("j")) {
-            std::lock_guard lock(mutex_);
-            int count = (int)cached_topics_.size();
-            if (selected_ < count - 1) {
-                selected_++;
-                auto term_size = Terminal::Size();
-                int max_visible = std::max(3, term_size.dimy - 12);
-                if (selected_ >= scroll_offset_ + max_visible) {
-                    scroll_offset_ = selected_ - max_visible + 1;
-                }
-            }
-            return true;
-        }
-        if (event == Event::PageUp) {
-            std::lock_guard lock(mutex_);
-            auto term_size = Terminal::Size();
-            int max_visible = std::max(3, term_size.dimy - 12);
-            scroll_offset_ = std::max(0, scroll_offset_ - max_visible);
-            selected_ = scroll_offset_;
-            return true;
-        }
-        if (event == Event::PageDown) {
-            std::lock_guard lock(mutex_);
-            auto term_size = Terminal::Size();
-            int max_visible = std::max(3, term_size.dimy - 12);
-            int count = (int)cached_topics_.size();
-            scroll_offset_ = std::min(scroll_offset_ + max_visible, std::max(0, count - max_visible));
-            selected_ = scroll_offset_;
-            return true;
-        }
-
-        // Mouse wheel scroll
-        if (event.is_mouse()) {
-            auto& mouse = event.mouse();
-            if (mouse.button == Mouse::WheelDown) {
-                std::lock_guard lock(mutex_);
-                int count = (int)cached_topics_.size();
-                auto term_size = Terminal::Size();
-                int max_visible = std::max(3, term_size.dimy - 12);
-                if (selected_ < count - 1) {
-                    selected_ = std::min(selected_ + 3, count - 1);
-                    if (selected_ >= scroll_offset_ + max_visible) {
-                        scroll_offset_ = selected_ - max_visible + 1;
-                    }
-                }
-                return true;
-            }
-            if (mouse.button == Mouse::WheelUp) {
-                std::lock_guard lock(mutex_);
-                if (selected_ > 0) {
-                    selected_ = std::max(0, selected_ - 3);
-                    if (selected_ < scroll_offset_) scroll_offset_ = selected_;
-                }
-                return true;
-            }
-        }
-
         return false;
     });
 }
 
 void TopicScreen::tick() {
     auto topics = topic_mon_->snapshot();
+
+    // Ensure node data is fresh (refresh is internally throttled to 2s)
+    node_inspector_->refresh();
+    auto nodes = node_inspector_->nodes();
+    std::vector<std::string> node_names;
+    std::unordered_map<std::string, std::set<std::string>> node_topics;
+
+    node_names.reserve(nodes.size());
+    for (const auto& n : nodes) {
+        node_names.push_back(n.full_name);
+        std::set<std::string> topics_set;
+        for (const auto& t : n.publishers) topics_set.insert(t);
+        for (const auto& t : n.subscribers) topics_set.insert(t);
+        if (!topics_set.empty()) {
+            node_topics[n.full_name] = std::move(topics_set);
+        }
+    }
+    std::sort(node_names.begin(), node_names.end());
+
     std::lock_guard lock(mutex_);
     cached_topics_ = std::move(topics);
+    node_filter_.setOptions(node_names);
+    cached_node_topics_ = std::move(node_topics);
 }
 
 }  // namespace rtl::tui

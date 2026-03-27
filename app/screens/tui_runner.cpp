@@ -95,7 +95,35 @@ void TuiRunner::run() {
     //   1. Global keys (quit, tab switching)
     //   2. Forward remaining events directly to the active screen component
     // This avoids FTXUI's focus system entirely — no events are lost.
+    int tab_count = (int)screens_.size();
+
     auto with_global_keys = CatchEvent(main_renderer, [&](Event event) -> bool {
+        // Check if the active screen is capturing text input (e.g. search bar).
+        // When active, skip all character-based hotkeys so typed characters
+        // reach the screen instead of triggering tab switches or quit.
+        bool input_active = (selected_tab >= 0 && selected_tab < tab_count)
+            && screens_[selected_tab]->inputActive();
+
+        // Tab / Shift+Tab always work, even during text input
+        if (event == Event::Tab) {
+            selected_tab = (selected_tab + 1) % tab_count;
+            return true;
+        }
+        if (event == Event::TabReverse) {
+            selected_tab = (selected_tab - 1 + tab_count) % tab_count;
+            return true;
+        }
+
+        // When input is active, forward everything else to the screen
+        if (input_active) {
+            if (selected_tab >= 0 && selected_tab < (int)screen_components.size()) {
+                return screen_components[selected_tab]->OnEvent(event);
+            }
+            return false;
+        }
+
+        // --- Normal mode (no screen input active) ---
+
         // Quit (q or Q)
         if (event.is_character() &&
             (event.character() == "q" || event.character() == "Q")) {
@@ -128,17 +156,6 @@ void TuiRunner::run() {
                     return true;
                 }
             }
-        }
-
-        // Tab / Shift+Tab to cycle through tabs
-        int tab_count = (int)screens_.size();
-        if (event == Event::Tab) {
-            selected_tab = (selected_tab + 1) % tab_count;
-            return true;
-        }
-        if (event == Event::TabReverse) {
-            selected_tab = (selected_tab - 1 + tab_count) % tab_count;
-            return true;
         }
 
         // Forward all other events directly to the active screen's component

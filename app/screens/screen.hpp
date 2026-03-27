@@ -21,6 +21,10 @@ public:
 
     /// Called periodically (~30 Hz) from the tick thread.
     virtual void tick() {}
+
+    /// Returns true if this screen is capturing text input (e.g. search mode).
+    /// When true, the global key handler skips character-based hotkeys.
+    virtual bool inputActive() const { return false; }
 };
 
 }  // namespace rtl::tui

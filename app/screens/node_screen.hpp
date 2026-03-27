@@ -1,6 +1,7 @@
 #pragma once
 
 #include "screen.hpp"
+#include "components/scrollable_list.hpp"
 #include "ros2_tui_launcher/node_inspector.hpp"
 
 #include <mutex>
@@ -23,7 +24,8 @@ private:
 
     std::mutex mutex_;
     std::vector<DiscoveredNode> cached_nodes_;
-    int selected_ = 0;
+
+    ScrollableList scroll_list_;
 };
 
 }  // namespace rtl::tui

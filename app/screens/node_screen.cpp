@@ -15,6 +15,9 @@ ftxui::Component NodeScreen::component() {
     auto renderer = Renderer([this] {
         std::lock_guard lock(mutex_);
 
+        scroll_list_.setItemCount((int)cached_nodes_.size());
+        int selected = scroll_list_.selected();
+
         auto header = hbox({
             text("   NODE") | bold | size(WIDTH, EQUAL, 42),
             text("NAMESPACE") | bold | size(WIDTH, EQUAL, 25),
@@ -41,7 +44,7 @@ ftxui::Component NodeScreen::component() {
             else if (state_text == "inactive") state_color = Color::Yellow;
             else if (state_text == "unconfigured") state_color = Color::GrayDark;
 
-            bool is_selected = (idx == selected_);
+            bool is_selected = (idx == selected);
             std::string prefix = is_selected ? " > " : "   ";
 
             auto row = hbox({
@@ -74,18 +77,13 @@ ftxui::Component NodeScreen::component() {
     });
 
     return CatchEvent(renderer, [this](Event event) {
-        if (event == Event::ArrowUp || event == Event::Character("k")) {
-            std::lock_guard lock(mutex_);
-            if (selected_ > 0) selected_--;
-            return true;
-        }
-        if (event == Event::ArrowDown || event == Event::Character("j")) {
-            std::lock_guard lock(mutex_);
-            if (selected_ < (int)cached_nodes_.size() - 1) selected_++;
-            return true;
-        }
+        std::lock_guard lock(mutex_);
+
+        // Scroll list handles navigation
+        if (scroll_list_.handleEvent(event)) return true;
+
+        // Screen-specific keys
         if (event.is_character() && event.character() == "r") {
-            // Manual refresh — the tick thread also refreshes (throttled to 2s)
             inspector_->refresh();
             return true;
         }
